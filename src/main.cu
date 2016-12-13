@@ -8,6 +8,7 @@
 #include <valarray>
 
 #include <hdf5.h>
+#include <wb.h>
 
 #include "range.hpp"
 #include "utils.hpp"
@@ -285,6 +286,44 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 }
 
 int main(int argc, char **argv) {
+  int deviceCount;
+  //wbArg_read(argc, argv);
+  cudaGetDeviceCount(&deviceCount);
+
+  //wbTime_start(GPU, "Getting GPU Data."); //@@ start a timer
+  for (int dev = 0; dev < deviceCount; dev++) {
+    //std::cout << "Device Count: " << dev;
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, dev);
+    std::cout << "Device " << dev << " name: " << deviceProp.name << "\n";
+    if (dev == 0) {
+      if (deviceProp.major == 9999 && deviceProp.minor == 9999) {
+        std::cout << "No CUDA GPU has been detected \n";
+        return -1;
+      } else if (deviceCount == 1) {
+        //@@ WbLog is a provided logging API (similar to Log4J).
+        //@@ The logging function wbLog takes a level which is either
+        //@@ OFF, FATAL, ERROR, WARN, INFO, DEBUG, or TRACE and a
+        //@@ message to be printed.
+        std::cout << "There is 1 device supporting CUDA" << "\n";
+      } else {
+        std::cout << "There are " << deviceCount << " devices supporting CUDA" << "\n";
+      }
+    }
+
+    std::cout << "Device " << dev << " name: " << deviceProp.name << "\n";
+    std::cout << " Computational Capabilities: " << deviceProp.major << "." << deviceProp.minor << "\n";
+    std::cout << " Maximum global memory size: " << deviceProp.totalGlobalMem << "\n";
+    std::cout << " Maximum constant memory size: " << deviceProp.totalConstMem << "\n";
+    std::cout << " Maximum shared memory size per block: " << deviceProp.sharedMemPerBlock << "\n";
+    std::cout << " Maximum block dimensions: " << deviceProp.maxThreadsDim[0] << " x " << deviceProp.maxThreadsDim[1]
+        << " x " << deviceProp.maxThreadsDim[2] << "\n";
+    std::cout << " Maximum grid dimensions: " << deviceProp.maxGridSize[0] <<
+          " x " << deviceProp.maxGridSize[1] << " x " << deviceProp.maxGridSize[2] << "\n";
+    std::cout << " Warp size: " << deviceProp.warpSize << "\n";
+  }
+
+  //wbTime_stop(GPU, "Getting GPU Data."); //@@ stop the timer
 
   if (argc != 3 && argc != 4) {
     std::cerr << "\n"

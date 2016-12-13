@@ -140,6 +140,12 @@ static void relu4(float *X, const int xdims[4]) {
   }
 }
 
+__global__ void relu4_kernel(float *X, const int xdims[4]){
+	int row = blockIdx.x*blockDim.x+threadIdx.x;
+	if(row < xdims[0] * xdims[1] * xdims[2] * xdims[3])
+		X[i] = (X[i] < 0) ? 0 : X[i];
+}
+
 // Recified linear unit 2d
 static void relu2(float *X, const int xdims[2]) {
   for (const auto i : range(0, xdims[0] * xdims[1])) {
@@ -210,7 +216,25 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
 
   /// relu layer
-  relu4(a, adims);
+  //relu4(a, adims);
+  float *device_a;
+  int *device_adims;
+  int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
+
+  cudaMalloc((void **)&device_admis, sizeof(int)*4);
+  cudaMemcpy(device_adims, adims, sizeof(int)*4, cudaMemcpyHostToDevice);
+
+  cudaMalloc((void **)&device_a, sizeof(float)* device_a_size);
+  cudaMemcpy(device_a, a, sizeof(float)*device_a_size, cudaMemcpyHostToDevice);
+
+  dim3 DimGrid(ceil(device_a_size/256), 1, 1);
+  dim3 DimBlock(256, 1, 1);
+  relu4_kernerl<<<DimGrid, DimBlock>>>(device_a, device_adims);
+
+  cudaMemcpy(device_adims, adims, sizeof(int)*4, cudaMemcpyDeviceToHost);
+  cudaMemcpy(device_a, a, sizeof(float)*device_a_size, cudaMemcpyDeviceToHost);
+
+
 
   // average pooling
   const int pool_size = 2;

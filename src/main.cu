@@ -101,6 +101,49 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
   check_success(H5Fclose(file_id));
 }
 
+__global__ void conv_forward_valid_kernel(const float *X, const int xdims[4],
+                               const float *W, const int wdims[4], float *Y,
+                               const int ydims[4]) {
+  const auto filter_h   = wdims[0];
+  const auto filter_w   = wdims[1];
+  const auto in_channel = wdims[2];
+  const auto n_out = ydims[0];
+  const auto m_out = ydims[3];
+  const auto w_out = ydims[2];
+  const auto h_out = ydims[1];
+  //const int w_grid = ceil(w_out/16.0);
+
+  int n, m , h, w;
+
+  n = blockIdx.x;
+  m = blockIdx.y;
+  h = blockIdx.z/w_out + threadIdx.y;
+  w = blockIdx.z%w_out + threadIdx.x;
+
+  if(n < n_out && m < m_out && h < h_out && w < w_out){
+    float acc = 0;
+
+    for (const auto p : range(0, filter_h)) {
+      for (const auto q : range(0, filter_w)) {
+        for (const auto c : range(0, in_channel)) {
+          const auto xoffset = n * xdims[1] * xdims[2] * xdims[3] +
+                               (h + p) * xdims[2] * xdims[3] +
+                               (w + q) * xdims[3] + c;
+          const auto woffset = p * wdims[1] * wdims[2] * wdims[3] +
+                               q * wdims[2] * wdims[3] + c * wdims[3] + m;
+          std::cout<<X[xoffset]<<" ";
+          acc += X[xoffset]*W[woffset];
+         }
+       }
+     }
+
+     const auto yoffset =
+         ((n * ydims[1] + h) * ydims[2] + w) * ydims[3] + m;
+     Y[yoffset] = acc;
+  }
+
+}
+
 // From book chapter Figure 16.4
 static void conv_forward_valid(const float *X, const int xdims[4],
                                const float *W, const int wdims[4], float *Y,
@@ -207,32 +250,161 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
                        (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   auto a = zeros<float>(adims);
-  conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
+
+  float* g1 = allocate<float>(xdims);
+  float* g2 = allocate<float>(conv1dims);
+
+  float* deviceX;
+  float* deviceConv1;
+  float* deviceA;
+
+  std::cout<<"x prior"<<std::endl;
+  for(int i = 0; i < xdims[0]*xdims[1]*xdims[2]*xdims[3]; i++) {
+    std::cout<<x[i]<<' ';
+  }
+
+  cudaMalloc((void**) &deviceX, xdims[0]*xdims[1]*xdims[2]*xdims[3] * sizeof(float));
+  cudaMalloc((void**) &deviceConv1, conv1dims[0]*conv1dims[1]*conv1dims[2]*conv1dims[3] * sizeof(float));
+  cudaMalloc((void**) &deviceA, adims[0]*adims[1]*adims[2]*adims[3] * sizeof(float));
+
+  cudaMemcpy(deviceX, x, xdims[0]*xdims[1]*xdims[2]*xdims[3] * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(deviceConv1, conv1, conv1dims[0]*conv1dims[1]*conv1dims[2]*conv1dims[3] * sizeof(float), cudaMemcpyHostToDevice);
+
+  // cudaMemcpy(g1, deviceX, xdims[0]*xdims[1]*xdims[2]*xdims[3] * sizeof(float), cudaMemcpyDeviceToHost);
+  // cudaMemcpy(g2, deviceConv1, conv1dims[0]*conv1dims[1]*conv1dims[2]*conv1dims[3] * sizeof(float), cudaMemcpyDeviceToHost);
+  //
+  // std::cout<<"\nx"<<std::endl;
+  // for(int i = 0; i < xdims[0]*xdims[1]*xdims[2]*xdims[3]; i++) {
+  //   std::cout<<x[i]<<' ';
+  // }
+  //
+  // std::cout<<"\ng1"<<std::endl;
+  // for(int i = 0; i < xdims[0]*xdims[1]*xdims[2]*xdims[3]; i++) {
+  //   std::cout<<g1[i]<<' ';
+  // }
+
+  const int W_grid = ceil(adims[2]/16.0);
+  const int H_grid = ceil(adims[1]/16.0);
+  const int Z = W_grid*H_grid;
+  const int N = adims[0];
+  const int M = adims[3];
+
+  dim3 convBlockDim(16, 16, 1);
+  dim3 convGridDim(N, M, Z);
+
+  // get start time
+  const auto start = now();
+
+  conv_forward_valid_kernel<<<convGridDim, convBlockDim>>>(deviceX, xdims, deviceConv1, conv1dims, deviceA, adims);
+  //conv_forward_valid(g1, xdims, g2, conv1dims, a, adims);
+
+  // get end time
+  const auto end = now();
+
+  // cudaMemcpy(a, deviceA, adims[0]*adims[1]*adims[2]*adims[3] * sizeof(float), cudaMemcpyDeviceToHost); //we won't need to copy over in future
+  // cudaFree(deviceX);
+  // cudaFree(deviceConv1);
+  // cudaFree(deviceA); // When we're set we won't free this until after avg pooling
+
+  const auto elapsed =
+      std::chrono::duration<double, std::milli>(end - start).count();
+
+  std::cout << "Done with " << adims[0] << " queries in Conv1 "
+            << "elapsed = " << elapsed << " milliseconds."
+            << "\n";
+
+  // get start time
+  const auto start1 = now();
 
   /// relu layer
   relu4(a, adims);
+
+  // get end time
+  const auto end1 = now();
+
+  const auto elapsed1 =
+      std::chrono::duration<double, std::milli>(end1 - start1).count();
+
+  std::cout << "Done with " << adims[0] << " queries in relu4 "
+            << "elapsed = " << elapsed1 << " milliseconds."
+            << "\n";
 
   // average pooling
   const int pool_size = 2;
   const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size,
                        adims[3]};
   auto b = zeros<float>(bdims);
+
+  // get start time
+  const auto start2 = now();
+
   average_pool(a, adims, pool_size, b, bdims);
+
+  // get end time
+  const auto end2 = now();
+
+  const auto elapsed2 =
+      std::chrono::duration<double, std::milli>(end2 - start2).count();
+
+  std::cout << "Done with " << adims[0] << " queries in pool1 "
+            << "elapsed = " << elapsed2 << " milliseconds."
+            << "\n";
 
   // conv layer
   const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
                        (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
   auto c = zeros<float>(cdims);
+
+  // get start time
+  const auto start3 = now();
+
   conv_forward_valid(b, bdims, conv2, conv2dims, c, cdims);
+
+  // get end time
+  const auto end3 = now();
+
+  const auto elapsed3 =
+      std::chrono::duration<double, std::milli>(end3 - start3).count();
+
+  std::cout << "Done with " << bdims[0] << " queries in Conv2 "
+            << "elapsed = " << elapsed3 << " milliseconds."
+            << "\n";
+
+  // get start time
+  const auto start4 = now();
 
   // relu
   relu4(c, cdims);
+
+  // get end time
+  const auto end4 = now();
+
+  const auto elapsed4 =
+      std::chrono::duration<double, std::milli>(end4 - start4).count();
+
+  std::cout << "Done with " << cdims[0] << " queries in relu4 "
+            << "elapsed = " << elapsed4 << " milliseconds."
+            << "\n";
 
   // average pooling
   const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size,
                        cdims[3]};
   auto d = zeros<float>(ddims);
+
+  // get start time
+  const auto start5 = now();
+
   average_pool(c, cdims, pool_size, d, ddims);
+
+  // get end time
+  const auto end5 = now();
+
+  const auto elapsed5 =
+      std::chrono::duration<double, std::milli>(end5 - start5).count();
+
+  std::cout << "Done with " << cdims[0] << " queries in pool2 "
+            << "elapsed = " << elapsed5 << " milliseconds."
+            << "\n";
 
   // reshape
   const int ddims2[] = {ddims[0], ddims[1] * ddims[2] * ddims[3]};
@@ -240,17 +412,71 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // matrix multiplication
   const int edims[] = {ddims[0], fc1dims[1]};
   auto e            = zeros<float>(edims);
+
+  // get start time
+  const auto start6 = now();
+
   fully_forward(d, ddims2, fc1, fc1dims, e, edims);
+
+  // get end time
+  const auto end6 = now();
+
+  const auto elapsed6 =
+      std::chrono::duration<double, std::milli>(end6 - start6).count();
+
+  std::cout << "Done with " << ddims2[0] << " queries in mm1 "
+            << "elapsed = " << elapsed6 << " milliseconds."
+            << "\n";
+
+  // get start time
+  const auto start7 = now();
 
   // relu
   relu2(e, edims);
 
+  // get end time
+  const auto end7 = now();
+
+  const auto elapsed7 =
+      std::chrono::duration<double, std::milli>(end7 - start7).count();
+
+  std::cout << "Done with " << edims[0] << " queries in relu2 "
+            << "elapsed = " << elapsed7 << " milliseconds."
+            << "\n";
+
   // matrix multiplication
   const int fdims[] = {edims[0], fc2dims[1]};
   auto f            = zeros<float>(fdims);
+
+  // get start time
+  const auto start8 = now();
+
   fully_forward(e, edims, fc2, fc2dims, f, fdims);
 
+  // get end time
+  const auto end8 = now();
+
+  const auto elapsed8 =
+      std::chrono::duration<double, std::milli>(end8 - start8).count();
+
+  std::cout << "Done with " << edims[0] << " queries in mm2 "
+            << "elapsed = " << elapsed8 << " milliseconds."
+            << "\n";
+
+  // get start time
+  const auto start9 = now();
+
   argmax(f, fdims, out);
+
+  // get end time
+  const auto end9 = now();
+
+  const auto elapsed9 =
+      std::chrono::duration<double, std::milli>(end9 - start9).count();
+
+  std::cout << "Done with " << edims[0] << " queries in argmax "
+            << "elapsed = " << elapsed9 << " milliseconds."
+            << "\n";
 
   delete[] a;
   delete[] b;

@@ -421,19 +421,33 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   //relu4(c, cdims);
 
   // relu kernel start
-
   dim3 DimGrid3(ceil(device_a_size/256), 1, 1);
   dim3 DimBlock3(256, 1, 1);
   relu4_kernel<<<DimGrid3, DimBlock3>>>(device_a, device_adims);
   cudaMemcpy(c, device_a, sizeof(float)*device_c_size, cudaMemcpyDeviceToHost);
-
   // relu kernel end
 
   // average pooling
   const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size,
                        cdims[3]};
+  int device_d_size = ddims[0]*ddims[1]*ddims[2]*ddims[3];
   auto d = zeros<float>(ddims);
-  average_pool(c, cdims, pool_size, d, ddims);
+  //average_pool(c, cdims, pool_size, d, ddims);
+
+  //pooling kernel start
+  cudaMemcpy(device_xdims, ddims, sizeof(int)*4, cudaMemcpyHostToDevice);
+
+  cudaMemcpy(device_x, d, sizeof(float)*device_d_size, cudaMemcpyHostToDevice);
+
+  w_grid = ceil(ddims[2]/tile_size);
+  h_grid = ceil(ddims[1]/tile_size);
+
+  dim3 DimGrid4(ddims[0], ddims[3], ceil(ddims[1]*ddims[2]/256.0));
+  dim3 DimBlock4(256, 1, 1);
+  average_pool_kernel<<<DimGrid4, DimBlock4>>>(device_a, device_adims, pool_size, device_x, device_xdims, w_grid);
+
+  cudaMemcpy(d, device_x, sizeof(float)*device_d_size, cudaMemcpyDeviceToHost);
+  //pooling kernel end
 
   // reshape
   const int ddims2[] = {ddims[0], ddims[1] * ddims[2] * ddims[3]};

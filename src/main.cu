@@ -176,6 +176,33 @@ static void average_pool(const float *X, const int xdims[4],
   }
 }
 
+__global__ void average_pool_kernel(const float *X, const int xdims[4],
+                         const int pool_size, float *Y, const int ydims[4], const int w_grid) {
+	int i = blockIdx.x;
+	int m = blockIdx.y;
+	int idx = blockIdx.z*blockDim.x + threadIdx.x;
+	int h = idx/ydims[2];
+	int w = idx%ydims[2];
+	//int h = blockIdx.z/(w_grid) + threadIdx.y;
+	//int w = blockIdx.z%(w_grid) + threadIdx.x;
+	if(h < ydims[1] && w < ydims[2]){
+      //for (const auto w : range(0, ydims[2])) {
+       // for (const auto h : range(0, ydims[1])) {
+		  const auto yoffset = ((i * ydims[1] + h) * ydims[2] + w) * ydims[3] + m;
+          for (const auto p : range(0, pool_size)) {
+            for (const auto q : range(0, pool_size)) {
+              const auto xoffset = i * xdims[1] * xdims[2] * xdims[3] +
+                                   (pool_size * h + p) * xdims[2] * xdims[3] +
+                                   (pool_size * w + q) * xdims[3] + m;
+              //Y[yoffset] += X[xoffset] / (1.0f * pool_size * pool_size);
+			  atomicAdd(&Y[yoffset], X[xoffset]/(1.0f * pool_size * pool_size));
+            }
+          }
+        //}
+      //}
+	}
+}
+
 static void fully_forward(const float *X, const int xdims[2], float *W,
                           const int wdims[2], float *Y, const int ydims[2]) {
   for (const auto i : range(0, xdims[0])) {
@@ -217,6 +244,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
   /// relu layer
   //relu4(a, adims);
+
+  // relu kernel start layer
   float *device_a;
   int *device_adims;
   int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
@@ -232,7 +261,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   relu4_kernel<<<DimGrid, DimBlock>>>(device_a, device_adims);
 
   cudaMemcpy(device_adims, adims, sizeof(int)*4, cudaMemcpyDeviceToHost);
-  cudaMemcpy(device_a, a, sizeof(float)*device_a_size, cudaMemcpyDeviceToHost);
+  cudaMemcpy(a, device_a, sizeof(float)*device_a_size, cudaMemcpyDeviceToHost);
+  // relu kernel end layer
 
 
 
@@ -241,7 +271,32 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size,
                        adims[3]};
   auto b = zeros<float>(bdims);
-  average_pool(a, adims, pool_size, b, bdims);
+  //average_pool(a, adims, pool_size, b, bdims);
+
+  // average pooling kernel start
+  float *device_b;
+  int *device_bdims;
+  int device_b_size = bdims[0]*bdims[1]*bdims[2]*bdims[3];
+
+  cudaMalloc((void **)&device_bdims, sizeof(int)*4);
+  cudaMemcpy(device_bdims, bdims, sizeof(int)*4, cudaMemcpyHostToDevice);
+
+  cudaMalloc((void **)&device_b, sizeof(float)* device_b_size);
+  cudaMemcpy(device_b, b, sizeof(float)*device_b_size, cudaMemcpyHostToDevice);
+
+  int tile_size = 16;
+  int w_grid = ceil(bdims[2]/tile_size);
+  int h_grid = ceil(bdims[1]/tile_size);
+  //dim3 DimGrid1(bdims[0], bdims[3], w_grid*h_grid);
+  dim3 DimGrid1(bdims[0], bdims[3], ceil(bdims[1]*bdims[2]/256.0));
+  //dim3 DimBlock1(tile_size, tile_size, 1);
+  dim3 DimBlock1(256, 1, 1);
+  average_pool_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_adims, pool_size, device_b, device_bdims, w_grid);
+
+  cudaMemcpy(device_bdims, bdims, sizeof(int)*4, cudaMemcpyDeviceToHost);
+  cudaMemcpy(b, device_b, sizeof(float)*device_b_size, cudaMemcpyDeviceToHost);
+  // average pooling kernel end
+
 
   // conv layer
   const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),

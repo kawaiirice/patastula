@@ -170,18 +170,33 @@ static void average_pool(const float *X, const int xdims[4],
   }
 }
 
-static void fully_forward(const float *X, const int xdims[2], float *W,
+__global__ void fully_forward_kernel (const float *X, const int xdims[2], float *W,
                           const int wdims[2], float *Y, const int ydims[2]) {
-  for (const auto i : range(0, xdims[0])) {
-    for (const auto j : range(0, wdims[1])) {
+    int i, j;
+    i = blockIdx.y * blockDim.y + threadIdx.y; // y index of output
+    j = blockIdx.x * blockDim.x + threadIdx.x; // x index of output
+
+    if(i < ydims[0] && j < ydims[1]){
       float sum = 0;
       for (const auto k : range(0, xdims[1])) {
         sum += X[i * xdims[1] + k] * W[k * wdims[1] + j];
       }
       Y[i * wdims[1] + j] = sum;
     }
-  }
 }
+
+// static void fully_forward(const float *X, const int xdims[2], float *W,
+//                           const int wdims[2], float *Y, const int ydims[2]) {
+//   for (const auto i : range(0, xdims[0])) {
+//     for (const auto j : range(0, wdims[1])) {
+//       float sum = 0;
+//       for (const auto k : range(0, xdims[1])) {
+//         sum += X[i * xdims[1] + k] * W[k * wdims[1] + j];
+//       }
+//       Y[i * wdims[1] + j] = sum;
+//     }
+//   }
+// }
 
 // Choose the guess with largest score
 static void argmax(const float *X, const int xdims[2], int *Y) {
@@ -238,9 +253,50 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   const int ddims2[] = {ddims[0], ddims[1] * ddims[2] * ddims[3]};
 
   // matrix multiplication
-  const int edims[] = {ddims[0], fc1dims[1]};
+  const int edims[] = {ddims[0], fc1dims[1]};//height, width
   auto e            = zeros<float>(edims);
-  fully_forward(d, ddims2, fc1, fc1dims, e, edims);
+
+  float* deviceD;
+  int* deviceDdims2;
+  float* deviceFc1;
+  int* deviceFc1dims;
+  float* deviceE;
+  int* deviceEdims;
+
+  int d2Size = ddims2[0] * ddims2[1];
+  int fc1Size = fc1dims[0] * fc1dims[1];
+  int eSize = edims[0] * edims[1];
+
+  cudaMalloc((void**) &deviceD, d2Size * sizeof(float));
+  cudaMalloc((void**) &deviceDdims2, 2 * sizeof(int));
+
+  cudaMalloc((void**) &deviceFc1, fc1Size * sizeof(float));
+  cudaMalloc((void**) &deviceFc1dims, 2 * sizeof(int));
+
+  cudaMalloc((void**) &deviceE, eSize * sizeof(float));
+  cudaMalloc((void**) &deviceEdims, 2 * sizeof(int));
+
+  cudaMemcpy(deviceD, d, d2Size * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(deviceDdims2, ddims2, 2 * sizeof(int), cudaMemcpyHostToDevice);
+
+  cudaMemcpy(deviceFc1, fc1, fc1Size * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(deviceFc1dims, fc1dims, 2 * sizeof(int), cudaMemcpyHostToDevice);
+
+  cudaMemcpy(deviceEdims, edims, 2 * sizeof(int), cudaMemcpyHostToDevice);
+
+
+  dim3 DimGrid(ceil(edims[1]/16.0), ceil(edims[0]/16.0), 1);
+  dim3 DimBlock(16, 16, 1);
+  // fully_forward(d, ddims2, fc1, fc1dims, e, edims);
+  // get start time
+  const auto startfc1 = now();
+  fully_forward_kernel<<<DimGrid, DimBlock>>>(deviceD, deviceDdims2, deviceFc1, deviceFc1dims, deviceE, deviceEdims);
+  const auto endfc1 = now();
+  const auto elapsedfc1 = std::chrono::duration<double, std::milli>(endfc1 - startfc1).count();
+  std::cout << "Done with " << edims[0] << " queries in fully_forward "
+            << "elapsed = " << elapsedfc1 << " milliseconds." << "\n";
+
+  cudaMemcpy(e, deviceE, eSize * sizeof(float), cudaMemcpyDeviceToHost);
 
   // relu
   relu2(e, edims);
@@ -248,7 +304,38 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // matrix multiplication
   const int fdims[] = {edims[0], fc2dims[1]};
   auto f            = zeros<float>(fdims);
-  fully_forward(e, edims, fc2, fc2dims, f, fdims);
+
+  float* deviceFc2;
+  int* deviceFc2dims;
+  float* deviceF;
+  int* deviceFdims;
+
+  int fc2size = fc2dims[0] * fc2dims[1];
+  int fsize = fdims[0] * fdims[1];
+
+  cudaMalloc((void**) &deviceFc2, fc2size * sizeof(float));
+  cudaMalloc((void**) &deviceFc2dims, 2 * sizeof(int));
+
+  cudaMalloc((void**) &deviceF, fsize * sizeof(float));
+  cudaMalloc((void**) &deviceFdims, 2 * sizeof(int));
+
+  cudaMemcpy(deviceE, e, eSize * sizeof(float), cudaMemcpyHostToDevice);
+  // cudaMemcpy(deviceEdims, edims, 2 * sizeof(int), cudaMemcpyHostToDevice);
+
+  cudaMemcpy(deviceFc2, fc2, fc2size * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(deviceFc2dims, fc2dims, 2 * sizeof(int), cudaMemcpyHostToDevice);
+
+  cudaMemcpy(deviceFdims, fdims, 2 * sizeof(int), cudaMemcpyHostToDevice);
+
+  const auto startfc2 = now();
+  //fully_forward(e, edims, fc2, fc2dims, f, fdims);
+  fully_forward_kernel<<<DimGrid, DimBlock>>>(deviceE, deviceEdims, deviceFc2, deviceFc2dims, deviceF, deviceFdims);
+  const auto endfc2 = now();
+  const auto elapsedfc2 = std::chrono::duration<double, std::milli>(endfc2 - startfc2).count();
+  std::cout << "Done with " << fdims[0] << " queries in fully_forward 2"
+            << "elapsed = " << elapsedfc2 << " milliseconds." << "\n";
+
+  cudaMemcpy(f, deviceF, fsize * sizeof(float), cudaMemcpyDeviceToHost);
 
   argmax(f, fdims, out);
 

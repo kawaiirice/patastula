@@ -418,7 +418,16 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // kernel conv end
 
   // relu
-  relu4(c, cdims);
+  //relu4(c, cdims);
+
+  // relu kernel start
+
+  dim3 DimGrid3(ceil(device_a_size/256), 1, 1);
+  dim3 DimBlock3(256, 1, 1);
+  relu4_kernel<<<DimGrid3, DimBlock3>>>(device_a, device_adims);
+  cudaMemcpy(c, device_a, sizeof(float)*device_c_size, cudaMemcpyDeviceToHost);
+
+  // relu kernel end
 
   // average pooling
   const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size,

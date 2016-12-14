@@ -291,7 +291,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
   float *device_conv1;
   int device_conv1_size = conv1dims[0] * conv1dims[1] * conv1dims[2] * conv1dims[3];
-  cudaMalloc((void **)&device_conv1, sizeof(float)*device_conv1_size);
+  int device_conv2_size = conv2dims[0] * conv2dims[1] * conv2dims[2] * conv2dims[3];
+  cudaMalloc((void **)&device_conv1, sizeof(float)*device_conv2_size);
   cudaMemcpy(device_conv1, conv1, sizeof(float)*device_conv1_size, cudaMemcpyHostToDevice);
 
   int *device_conv1dims;
@@ -346,16 +347,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   auto b = zeros<float>(bdims);
   //average_pool(a, adims, pool_size, b, bdims);
 
-  //float *device_b;
-  //int *device_bdims;
-
   //std::cout << "Device a and c sizes: " << device_a_size << " " << device_c_size << std::endl;
 
-  //cudaMalloc((void **)&device_bdims, sizeof(int)*4);
-  //cudaMemcpy(device_bdims, bdims, sizeof(int)*4, cudaMemcpyHostToDevice);
   cudaMemcpy(device_xdims, bdims, sizeof(int)*4, cudaMemcpyHostToDevice);
 
-  //cudaMalloc((void **)&device_b, sizeof(float)* device_b_size);
   cudaMemcpy(device_x, b, sizeof(float)*device_b_size, cudaMemcpyHostToDevice);
 
   int tile_size = 16;
@@ -401,7 +396,26 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
    //                    (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
   //int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
   auto c = zeros<float>(cdims);
-  conv_forward_valid(b, bdims, conv2, conv2dims, c, cdims);
+  //conv_forward_valid(b, bdims, conv2, conv2dims, c, cdims);
+
+  // kernel conv start
+  // device_x holds device_b, device_conv1 holds device_conv2, device_a holds c
+
+  cudaMemcpy(device_conv1, conv2, sizeof(float)*device_conv2_size, cudaMemcpyHostToDevice);
+
+  cudaMemcpy(device_conv1dims, conv2dims, sizeof(int)*4, cudaMemcpyHostToDevice);
+
+  cudaMemcpy(device_adims, cdims, sizeof(int)*4, cudaMemcpyHostToDevice);
+
+  cudaMemcpy(device_a, c, sizeof(float)*device_c_size, cudaMemcpyHostToDevice);
+
+  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
+  dim3 DimGrid2(cdims[0], cdims[3], ceil(cdims[1]*cdims[2]/256.0));
+  dim3 DimBlock2(256, 1, 1);
+  conv_forward_valid_kernel<<<DimGrid2, DimBlock2>>>(device_x, device_xdims, device_conv1, device_conv1dims, device_a, device_adims);
+
+  cudaMemcpy(c, device_a, sizeof(float)*device_c_size, cudaMemcpyDeviceToHost);
+  // kernel conv end
 
   // relu
   relu4(c, cdims);

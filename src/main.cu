@@ -140,12 +140,18 @@ static void relu4(float *X, const int xdims[4]) {
   }
 }
 
-// Recified linear unit 2d
-static void relu2(float *X, const int xdims[2]) {
-  for (const auto i : range(0, xdims[0] * xdims[1])) {
-    X[i] = (X[i] < 0) ? 0 : X[i];
-  }
+__global__ void relu2_kernel(float *X, const int xdims[2]){
+ 	int i = blockIdx.x*blockDim.x+threadIdx.x;
+ 	if(i < xdims[0] * xdims[1])
+ 		X[i] = (X[i] < 0) ? 0 : X[i];
 }
+
+// // Recified linear unit 2d
+// static void relu2(float *X, const int xdims[2]) {
+//   for (const auto i : range(0, xdims[0] * xdims[1])) {
+//     X[i] = (X[i] < 0) ? 0 : X[i];
+//   }
+// }
 
 // From book chapter Figure 16.5
 static void average_pool(const float *X, const int xdims[4],
@@ -284,22 +290,27 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
   cudaMemcpy(deviceEdims, edims, 2 * sizeof(int), cudaMemcpyHostToDevice);
 
-
-  dim3 DimGrid(ceil(edims[1]/16.0), ceil(edims[0]/16.0), 1);
-  dim3 DimBlock(16, 16, 1);
+  dim3 DimGridE(ceil(edims[1]/16.0), ceil(edims[0]/16.0), 1);
+  dim3 DimBlockE(16, 16, 1);
   // fully_forward(d, ddims2, fc1, fc1dims, e, edims);
   // get start time
   const auto startfc1 = now();
-  fully_forward_kernel<<<DimGrid, DimBlock>>>(deviceD, deviceDdims2, deviceFc1, deviceFc1dims, deviceE, deviceEdims);
+  fully_forward_kernel<<<DimGridE, DimBlockE>>>(deviceD, deviceDdims2, deviceFc1, deviceFc1dims, deviceE, deviceEdims);
   const auto endfc1 = now();
   const auto elapsedfc1 = std::chrono::duration<double, std::milli>(endfc1 - startfc1).count();
   std::cout << "Done with " << edims[0] << " queries in fully_forward "
             << "elapsed = " << elapsedfc1 << " milliseconds." << "\n";
 
-  cudaMemcpy(e, deviceE, eSize * sizeof(float), cudaMemcpyDeviceToHost);
-
   // relu
-  relu2(e, edims);
+  // relu2(e, edims);
+  dim3 DimGridRelu2(ceil(eSize/256.0), 1, 1);
+  dim3 DimBlockRelu2(256, 1, 1);
+  const auto startrelu2 = now();
+  relu2_kernel<<<DimGridRelu2, DimBlockRelu2>>>(deviceE, deviceEdims);
+  const auto endrelu2 = now();
+  const auto elapsedrelu2 = std::chrono::duration<double, std::milli>(endrelu2 - startrelu2).count();
+  std::cout << "Done with " << edims[0] << " queries in relu2 "
+            << "elapsed = " << elapsedrelu2 << " milliseconds." << "\n";
 
   // matrix multiplication
   const int fdims[] = {edims[0], fc2dims[1]};
@@ -319,9 +330,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaMalloc((void**) &deviceF, fsize * sizeof(float));
   cudaMalloc((void**) &deviceFdims, 2 * sizeof(int));
 
-  cudaMemcpy(deviceE, e, eSize * sizeof(float), cudaMemcpyHostToDevice);
-  // cudaMemcpy(deviceEdims, edims, 2 * sizeof(int), cudaMemcpyHostToDevice);
-
   cudaMemcpy(deviceFc2, fc2, fc2size * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(deviceFc2dims, fc2dims, 2 * sizeof(int), cudaMemcpyHostToDevice);
 
@@ -329,10 +337,12 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
   const auto startfc2 = now();
   //fully_forward(e, edims, fc2, fc2dims, f, fdims);
-  fully_forward_kernel<<<DimGrid, DimBlock>>>(deviceE, deviceEdims, deviceFc2, deviceFc2dims, deviceF, deviceFdims);
+  dim3 DimGridF(ceil(fdims[1]/16.0), ceil(fdims[0]/16.0), 1);
+  dim3 DimBlockF(16, 16, 1);
+  fully_forward_kernel<<<DimGridF, DimBlockF>>>(deviceE, deviceEdims, deviceFc2, deviceFc2dims, deviceF, deviceFdims);
   const auto endfc2 = now();
   const auto elapsedfc2 = std::chrono::duration<double, std::milli>(endfc2 - startfc2).count();
-  std::cout << "Done with " << fdims[0] << " queries in fully_forward 2"
+  std::cout << "Done with " << fdims[0] << " queries in fully_forward 2 "
             << "elapsed = " << elapsedfc2 << " milliseconds." << "\n";
 
   cudaMemcpy(f, deviceF, fsize * sizeof(float), cudaMemcpyDeviceToHost);

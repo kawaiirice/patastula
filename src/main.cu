@@ -210,6 +210,7 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
 
 __global__ void argmax_kernel(const float *input, const int fdims[2], int *output) {
 
+  /************ parallelizing outer loop ************/
   int i= threadIdx.x;
   auto max_idx = 0;
   auto max     = input[i * fdims[1]];
@@ -222,8 +223,7 @@ __global__ void argmax_kernel(const float *input, const int fdims[2], int *outpu
   }
   output[blockIdx.x*1024+i] = max_idx;
   
-  // const auto fdims0_size = fdims[0];
-  //correct start
+  /************ parallelizing inner loop ************/
   // __shared__ int max_idx[16];
   // __shared__ float max[16];
 
@@ -232,7 +232,7 @@ __global__ void argmax_kernel(const float *input, const int fdims[2], int *outpu
   // int dim_x = blockDim.x;
   // int start_index = b_x*10;
 
-  // // initializing the two parts
+  // // initializing the shared memory
   // if(start_index+t_x < start_index+10){
   //   // output[1] = 1;
   //   max_idx[t_x] = t_x;
@@ -245,26 +245,7 @@ __global__ void argmax_kernel(const float *input, const int fdims[2], int *outpu
   //   max[t_x] = 0;
   //   }
     
-  // } end
-
-  
-  // if(start_index+dim_x+t_x < fdims[0]*fdims[1]){
-  //   // output[3] = 3;
-  //   max_idx[dim_x+t_x] = dim_x+t_x;
-  //   max[dim_x+t_x] = input[start_index+dim_x+t_x];
-  // }
-  // else{
-  //   // output[4] = 4;
-  //   max_idx[dim_x+t_x] = 0;
-  //   max[dim_x+t_x] = input[start_index];
-  // }
-
-  // // sanity check
-  // int n = sizeof(max_idx)/sizeof(max_idx[0]);
-  // for(int i = 0; i < n; i++){
-  //   output[i] = max_idx[i];
-  // }
-  // output[5] = 5;
+  // } 
 
   // comparison
   // for(int idx =; idx >= 1; idx/=2){
@@ -364,36 +345,17 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaMemcpy(deviceF, f, numInputElements*sizeof(float),cudaMemcpyHostToDevice);
   cudaMemcpy(deviceFDIMS, fdims, 2*sizeof(int), cudaMemcpyHostToDevice);
 
-  // for testing
-  // float* g1;
-  // int* g2;
-
-  // g1=allocate<float>
-  // cudaMemcpy(g1, deviceF, numInputElements*sizeof(float), cudaMemcpyDeviceToHost);
-  // cudaMemcpy(g2, deviceFDIMS, 2*sizeof(int), cudaMemcpyHostToDevice);
-  // std::cout << "g1: \n";
-  // for (int i = 0; i < numInputElements; i++){
-  //   std::cout << g1[i] << "\n";
-  // }
-  //
-
-  // int thread_num = (numInputElements-1)/2+1;
-
+  // for parallelizing inner loop
   // dim3 dimGrid(10, 1, 1);
   // dim3 dimBlock(32, 1, 1);
 
+  // for paralleliziing outer loop
   dim3 dimGrid(ceil(fdims[0]/1024.0), 1, 1);
   dim3 dimBlock(1024, 1, 1);
    
   argmax_kernel<<<dimGrid,dimBlock>>>(deviceF,deviceFDIMS,deviceOUT);
 
-  // cudaDeviceSynchronize();
   cudaMemcpy(out, deviceOUT, numOutputElements * sizeof(int), cudaMemcpyDeviceToHost);
-  
-  // std::cout << "out: \n";
-  // for (int i = 0; i < sizeof(out)/sizeof(out[0]); i++){
-  //   std::cout << out[i] << "\n";
-  // }
 
   cudaFree(deviceF);
   cudaFree(deviceOUT);

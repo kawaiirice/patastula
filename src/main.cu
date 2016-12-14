@@ -273,6 +273,9 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3]};
   int device_b_size = bdims[0]*bdims[1]*bdims[2]*bdims[3];
 
+  const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
+                       (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
+  int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
 
   auto a = zeros<float>(adims);
 
@@ -346,7 +349,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   //float *device_b;
   //int *device_bdims;
 
-  //std::cout << "Device c and b sizes: " << device_c_size << " " << device_b_size << std::endl;
+  //std::cout << "Device a and c sizes: " << device_a_size << " " << device_c_size << std::endl;
 
   //cudaMalloc((void **)&device_bdims, sizeof(int)*4);
   //cudaMemcpy(device_bdims, bdims, sizeof(int)*4, cudaMemcpyHostToDevice);
@@ -394,8 +397,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
   // conv layer
 
-  const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
-                       (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
+  //const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
+   //                    (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
   //int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
   auto c = zeros<float>(cdims);
   conv_forward_valid(b, bdims, conv2, conv2dims, c, cdims);

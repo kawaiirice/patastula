@@ -17,6 +17,7 @@
 #define NUM_CHANNELS 1
 #define NUM_DIGITS 10
 #define BLOCK_SIZE 16
+#define TILE_WIDTH 8
 
 static int FLAGS_batch_size = 10000;
 static std::string FLAGS_testdata{};
@@ -161,6 +162,62 @@ __global__ void conv_forward_valid_kernel(const float *X, const int x0, const in
 		}
     Y[yoffset] = acc;
 	}
+}
+
+__global__ void conv_forward_valid_shared_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, 
+                               const float *W, const int w0, const int w1, const int w2, const int w3, 
+                               float *Y, const int y0, const int y1, const int y2, const int y3) {
+
+    const auto filter_h   = w0;
+    const auto in_channel = w2;
+
+    int W_grid = (y1-1)/TILE_WIDTH+1;
+
+    int X_TILE_WIDTH=TILE_WIDTH+filter_h-1;
+    extern __shared__ float  shmem[];
+    float *X_shared=&shmem[0];
+    float * W_shared=&shmem[X_TILE_WIDTH*X_TILE_WIDTH];
+
+    int n = blockIdx.x; // samples in batch
+    int m = blockIdx.y; // output feature map
+    int h_base = (blockIdx.z / W_grid) * TILE_WIDTH;
+    int w_base = (blockIdx.z % W_grid) * TILE_WIDTH;
+    int h_0 = threadIdx.y;
+    int w_0 = threadIdx.x;
+    int h = h_base + h_0; // output feature map height
+    int w = w_base + w_0; // output feature map width
+
+    
+    if(h < y1 && w < y2){
+      float acc = 0;
+      for (const auto c : range(0, in_channel)){
+        // initialize w_shared
+        if(h_0 < 5 && w_0 < 5){
+          const auto woffset = h_0 * w1 * w2 * w3 +w_0 * w2 * w3 + c * w3 + m;
+          W_shared[h_0 * 5 + w_0]=W[woffset];
+        }
+        __syncthreads();
+
+        // initialize x_shared
+        for (int i = h;i < h_base + X_TILE_WIDTH; i += TILE_WIDTH){
+          for(int j = w;j < w_base + X_TILE_WIDTH; j += TILE_WIDTH){ 
+            const auto xoffset = n * x1 * x2 * x3 +i * x2 * x3 +j * x3 + c;
+              X_shared[(i-h_base)* X_TILE_WIDTH+j-w_base]=X[xoffset];
+            }   
+          }
+        __syncthreads();
+        
+        // convolution
+        for(int p=0;p<5;p++){
+          for (int q=0;q<5;q++){
+            acc += X_shared[(h_0+p)*X_TILE_WIDTH+w_0+q]*W_shared[p*5+q];    
+          }
+        }
+        __syncthreads();
+      }
+      const auto yoffset = ((n * y1 + h) * y2 + w) * y3 + m;
+      Y[yoffset]=acc;       
+  }
 }
 
 __global__ void relu_kernel(float *X, int size){
@@ -477,12 +534,22 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaMemcpy(device_fc2, fc2, device_fc2_size * sizeof(float), cudaMemcpyHostToDevice);
 
   /* conv layer start */
-  dim3 DimGrid(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
-  dim3 DimBlock(256, 1, 1);
+  int W_grid = (adims[1]-1)/TILE_WIDTH+1;
+  int H_grid = (adims[2]-1)/TILE_WIDTH+1;
+
+  size_t shmem_size = sizeof(float) * ( (TILE_WIDTH +conv1dims[0] -1)*(TILE_WIDTH +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
+  dim3 DimBlock(TILE_WIDTH, TILE_WIDTH, 1);
+  dim3 DimGrid(adims[0], adims[3], W_grid * H_grid);
   const auto start = now();
-  conv_forward_valid_kernel<<<DimGrid, DimBlock>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+  conv_forward_valid_shared_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
                                                     device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
                                                     device_a, adims[0], adims[1], adims[2], adims[3]);
+  // dim3 DimGrid(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
+  // dim3 DimBlock(256, 1, 1);
+  // const auto start = now();
+  // conv_forward_valid_kernel<<<DimGrid, DimBlock>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+  //                                                   device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+  //                                                   device_a, adims[0], adims[1], adims[2], adims[3]);
   //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
   const auto end = now();
   const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();
@@ -512,12 +579,21 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* average pooling end */
 
   /* conv layer start */
-  dim3 DimGrid3(cdims[0], cdims[3], ceil(cdims[1]*cdims[2]/256.0));
-  dim3 DimBlock3(256, 1, 1);
+  // dim3 DimGrid3(cdims[0], cdims[3], ceil(cdims[1]*cdims[2]/256.0));
+  // dim3 DimBlock3(256, 1, 1);
+  W_grid = (cdims[1]-1)/TILE_WIDTH+1;
+  H_grid = (cdims[2]-1)/TILE_WIDTH+1;
+
+  size_t shmem_size3 = sizeof(float) * ( (TILE_WIDTH +conv2dims[0] -1)*(TILE_WIDTH +conv2dims[1]-1) + conv2dims[0]*conv2dims[1] ); 
+  dim3 DimBlock3(TILE_WIDTH, TILE_WIDTH, 1);
+  dim3 DimGrid3(cdims[0], cdims[3], W_grid * H_grid);
   const auto start3 = now();
-  conv_forward_valid_kernel<<<DimGrid3, DimBlock3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
+    conv_forward_valid_shared_kernel<<<DimGrid3, DimBlock3, shmem_size3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
                                                     device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
                                                     device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
+  // conv_forward_valid_kernel<<<DimGrid3, DimBlock3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
+  //                                                   device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
+  //                                                   device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
   const auto end3 = now();
   const auto elapsed3 = std::chrono::duration<double, std::milli>(end3 - start3).count();
   std::cout << "Done with Conv2 in elapsed = " << elapsed3 << " milliseconds." << "\n";

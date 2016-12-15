@@ -1,0 +1,15 @@
+USAGE:
+
+COMPILING
+cd patastula/
+cd build #there should be a build directory
+make
+
+TESTING 
+While testing on a local machine, the tester must check if their GPU supports CUDA. 
+If the system does not support CUDA then the code cannot be tested. 
+Otherwise, run th following command:
+./ece408 ../data/<data-file> ../data/<model-file> <batch size> 
+
+PERFORMANCE MEASUREMENTS
+TBD

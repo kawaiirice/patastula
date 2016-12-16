@@ -216,7 +216,7 @@ __global__ void conv_forward_valid_shared_kernel(const float *X, const int x0, c
         __syncthreads();
       }
       const auto yoffset = ((n * y1 + h) * y2 + w) * y3 + m;
-      Y[yoffset]=acc;       
+      Y[yoffset]= (acc < 0) ? 0: acc;       
   }
 }
 
@@ -418,12 +418,12 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   int device_f_size = fdims[0]*fdims[1];
 
   // allocating host memory
-  auto a = zeros<float>(adims);
-  auto b = zeros<float>(bdims);
-  auto c = zeros<float>(cdims);
-  auto d = zeros<float>(ddims);
-  auto e = zeros<float>(edims);
-  auto f = zeros<float>(fdims);
+  // auto a = zeros<float>(adims);
+  // auto b = zeros<float>(bdims);
+  // auto c = zeros<float>(cdims);
+  // auto d = zeros<float>(ddims);
+  // auto e = zeros<float>(edims);
+  // auto f = zeros<float>(fdims);
 
   /* Device */
   // device data
@@ -441,6 +441,14 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   float *device_conv2;
   float *device_fc1;
   float *device_fc2;
+
+  // pin memory
+  // cudaHostRegister(out, FLAGS_batch_size * sizeof(int), cudaHostRegisterDefault);
+  cudaHostRegister(x, device_x_size * sizeof(float), cudaHostRegisterDefault);
+  cudaHostRegister(conv1, device_conv1_size * sizeof(float), cudaHostRegisterDefault);
+  cudaHostRegister(conv2, device_conv2_size * sizeof(float), cudaHostRegisterDefault);
+  cudaHostRegister(fc1, device_fc1_size * sizeof(float), cudaHostRegisterDefault);
+  cudaHostRegister(fc2, device_fc2_size * sizeof(float), cudaHostRegisterDefault);
 
   // device malloc
   cudaMalloc((void **) &device_x, device_x_size * sizeof(float));
@@ -463,6 +471,13 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaMemcpy(device_conv2, conv2, device_conv2_size * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(device_fc1, fc1, device_fc1_size * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(device_fc2, fc2, device_fc2_size * sizeof(float), cudaMemcpyHostToDevice);
+
+  //unpin memory
+  cudaHostUnregister(x);
+  cudaHostUnregister(conv1);
+  cudaHostUnregister(conv2);
+  cudaHostUnregister(fc1);
+  cudaHostUnregister(fc2);
 
   /* conv layer start */
   int W_grid = (adims[1]-1)/TILE_WIDTH+1;
@@ -487,16 +502,16 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   std::cout << "Done with Conv1 in elapsed = " << elapsed << " milliseconds." << "\n";
   /* conv layer end*/
 
-  /* relu kernel start */
-  dim3 DimGrid1(ceil(device_a_size/256), 1, 1);
-  dim3 DimBlock1(256, 1, 1);
-  const auto start1 = now();
-  relu_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_a_size);
-  // relu4(a, adims);
-  const auto end1 = now();
-  const auto elapsed1 = std::chrono::duration<double, std::milli>(end1 - start1).count();
-  std::cout << "Done with relu4 elapsed = " << elapsed1 << " milliseconds." << "\n";
-  /* relu kernel end */
+  // /* relu kernel start */
+  // dim3 DimGrid1(ceil(device_a_size/256), 1, 1);
+  // dim3 DimBlock1(256, 1, 1);
+  // const auto start1 = now();
+  // relu_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_a_size);
+  // // relu4(a, adims);
+  // const auto end1 = now();
+  // const auto elapsed1 = std::chrono::duration<double, std::milli>(end1 - start1).count();
+  // std::cout << "Done with relu4 elapsed = " << elapsed1 << " milliseconds." << "\n";
+  // /* relu kernel end */
 
   /* average pooling start */
   dim3 DimGrid2(bdims[0], bdims[3], ceil(bdims[1]*bdims[2]/256.0));
@@ -530,16 +545,16 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   std::cout << "Done with Conv2 in elapsed = " << elapsed3 << " milliseconds." << "\n";
   /* conv layer end*/
 
-  /* relu later start */
-  dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
-  dim3 DimBlock4(256, 1, 1);
-  const auto start4 = now();
-  relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
-  // relu4(c, cdims);
-  const auto end4 = now();
-  const auto elapsed4 = std::chrono::duration<double, std::milli>(end4 - start4).count();
-  std::cout << "Done with relu4 in elapsed = " << elapsed4 << " milliseconds." << "\n";
-  /* relu layer end*/
+  // /* relu later start */
+  // dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
+  // dim3 DimBlock4(256, 1, 1);
+  // const auto start4 = now();
+  // relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
+  // // relu4(c, cdims);
+  // const auto end4 = now();
+  // const auto elapsed4 = std::chrono::duration<double, std::milli>(end4 - start4).count();
+  // std::cout << "Done with relu4 in elapsed = " << elapsed4 << " milliseconds." << "\n";
+  // /* relu layer end*/
 
   /* average pooling start*/
   dim3 DimGrid5(ddims[0], ddims[3], ceil(ddims[1]*ddims[2]/256.0));
@@ -550,7 +565,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   //average_pool(c, cdims, pool_size, d, ddims);
   const auto end5 = now();
   const auto elapsed5 = std::chrono::duration<double, std::milli>(end5 - start5).count();
-  std::cout << "Done with pool2 in elapsed = " << elapsed4 << " milliseconds." << "\n";
+  std::cout << "Done with pool2 in elapsed = " << elapsed5 << " milliseconds." << "\n";
   /* average pooling end*/
 
   /* fully forward start */
@@ -603,13 +618,15 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   const auto elapsed9 = std::chrono::duration<double, std::milli>(end9 - start9).count();
   std::cout << "Done with argmax in " << "elapsed = " << elapsed << " milliseconds." << "\n";
   /* argmax end */
-
+  // cudaHostRegister(out, FLAGS_batch_size * sizeof(int), cudaHostRegisterDefault);
   // copy back to host 
   const auto start0 = now();
   cudaMemcpy(out, device_out, FLAGS_batch_size * sizeof(int), cudaMemcpyDeviceToHost);
   const auto end0 = now();
   const auto elapsed0 = std::chrono::duration<double, std::milli>(end0 - start0).count();
   std::cout << "Copy back to host in elapsed = " << elapsed0 << " milliseconds." << "\n";
+
+  // cudaHostUnregister(out);
 
   // free device memory
   cudaFree(device_x);
@@ -626,12 +643,12 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaFree(device_fc2);
 
   // free host memory
-  delete[] a;
-  delete[] b;
-  delete[] c;
-  delete[] d;
-  delete[] e;
-  delete[] f;
+  // delete[] a;
+  // delete[] b;
+  // delete[] c;
+  // delete[] d;
+  // delete[] e;
+  // delete[] f;
 }
 
 int main(int argc, char **argv) {

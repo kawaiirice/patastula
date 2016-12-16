@@ -623,10 +623,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* average pooling end*/
 
   /* fully forward start */
-  dim3 DimGridE((edims[1]-1)/BLOCK_SIZE + 1, (edims[0]-1)/BLOCK_SIZE + 1, 1);
-  dim3 DimBlockE(BLOCK_SIZE, BLOCK_SIZE, 1);
+  dim3 DimGrid6((edims[1]-1)/BLOCK_SIZE + 1, (edims[0]-1)/BLOCK_SIZE + 1, 1);
+  dim3 DimBlock6(BLOCK_SIZE, BLOCK_SIZE, 1);
   const auto start6 = now();
-  fully_forward_kernel<<<DimGridE, DimBlockE>>>(device_d, ddims2[0], ddims2[1], device_fc1, fc1dims[0], fc1dims[1], device_e, edims[0], edims[1]); 
+  fully_forward_kernel<<<DimGrid6, DimBlock6>>>(device_d, ddims2[0], ddims2[1], device_fc1, fc1dims[0], fc1dims[1], device_e, edims[0], edims[1]); 
   // fully_forward(d, ddims2, fc1, fc1dims, e, edims);
   const auto end6 = now();
   const auto elapsed6 = std::chrono::duration<double, std::milli>(end6 - start6).count();
@@ -634,10 +634,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* fully forward end */
 
   /* relu2 start */
-  dim3 DimGridRelu2(ceil(device_e_size/256.0), 1, 1);
-  dim3 DimBlockRelu2(256, 1, 1);
+  dim3 DimGrid7(ceil(device_e_size/256.0), 1, 1);
+  dim3 DimBlock7(256, 1, 1);
   const auto start7 = now();
-  relu_kernel<<<DimGridRelu2, DimBlockRelu2>>>(device_e, device_e_size);
+  relu_kernel<<<DimGrid7, DimBlock7>>>(device_e, device_e_size);
   // relu2(e, edims);
   const auto end7 = now();
   const auto elapsed7 = std::chrono::duration<double, std::milli>(end7 - start7).count();
@@ -645,10 +645,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* relu2 end */
 
   /* fully forward start */
-  dim3 DimGridF((fdims[1] - 1)/BLOCK_SIZE + 1, (fdims[0] - 1)/BLOCK_SIZE + 1, 1);
-  dim3 DimBlockF(BLOCK_SIZE, BLOCK_SIZE, 1);
+  dim3 DimGrid8((fdims[1] - 1)/BLOCK_SIZE + 1, (fdims[0] - 1)/BLOCK_SIZE + 1, 1);
+  dim3 DimBlock8(BLOCK_SIZE, BLOCK_SIZE, 1);
   const auto start8 = now();
-  fully_forward_kernel<<<DimGridF, DimBlockF>>>(device_e, edims[0], edims[1], device_fc2, fc2dims[0], fc2dims[1], device_f, fdims[0], fdims[1]);
+  fully_forward_kernel<<<DimGrid8, DimBlock8>>>(device_e, edims[0], edims[1], device_fc2, fc2dims[0], fc2dims[1], device_f, fdims[0], fdims[1]);
   //fully_forward(e, edims, fc2, fc2dims, f, fdims);
   const auto end8 = now();
   const auto elapsed8 = std::chrono::duration<double, std::milli>(end8 - start8).count();

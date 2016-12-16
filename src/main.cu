@@ -341,6 +341,7 @@ __global__ void fully_forward_kernel (const float *X, const int x0, const int x1
     if(i < y0 && j < y1)
       Y[i * y1 + j] = sum;
 
+    // basic matrix mult
     // if(i < ydims[0] && j < ydims[1]){
     //   float sum = 0;
     //   for (const auto k : range(0, xdims[1])) {
@@ -366,90 +367,20 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
   }
 }
 
-__global__ void argmax_kernel(const float *X, const int xdims[2], float *YVal, int *Y) {
-
-  // /************ parallelizing outer loop ************/
-  // int i= threadIdx.x;
-  // auto max_idx = 0;
-  // auto max     = input[i * fdims[1]];
-  // for (const auto j : range(0, fdims[1])) {
-  //   const auto elem = input[(i * fdims[1]) + j];
-  //   if (elem > max) {
-  //     max_idx = j;
-  //     max     = elem;
-  //   }
-  // }
-  // output[blockIdx.x*1024+i] = max_idx;
-
-  /************ parallelizing inner loop ************/
-  // __shared__ int max_idx[16][32];
-  // __shared__ float max[16][32];
-  __shared__ int max_idx[32];
-  __shared__ float max[32];
-
-  int y = blockIdx.y;
-  int x = 2 * blockIdx.x * blockDim.x + threadIdx.x;
-
-  int tx = threadIdx.x;
-  // int ty = threadIdx.y;
-  //
-  // if(y < xdims[0] && x < xdims[1]) {
-  //   max_idx[ty][tx] = x;
-  //   max[ty][tx] = X[(y * xdims[1]) + x];
-  // }
-  // else {
-  //   max_idx[ty][tx] = 0;
-  //   max[ty][tx] = X[(y * xdims[1])]; //first of the row
-  // }
-  //
-  // if(y < xdims[0] && x + blockDim.x < xdims[1]) {
-  //   max_idx[ty][tx + blockDim.x] = x + blockDim.x;
-  //   max[ty][tx + blockDim.x] = X[(y * xdims[1]) + x + blockDim.x];
-  // }
-  // else {
-  //   max_idx[ty][tx + blockDim.x] = 0;
-  //   max[ty][tx + blockDim.x] = X[(y * xdims[1])]; //first of the row
-  // }
-  if(x < xdims[1]) {
-    max_idx[tx] = x;
-    max[tx] = X[(y * xdims[1]) + x];
-  }
-  else {
-    max_idx[tx] = 0;
-    max[tx] = X[(y * xdims[1])]; //first of the row
-  }
-
-  if(x + blockDim.x < xdims[1]) {
-    max_idx[tx + blockDim.x] = x + blockDim.x;
-    max[tx + blockDim.x] = X[(y * xdims[1]) + x + blockDim.x];
-  }
-  else {
-    max_idx[tx + blockDim.x] = 0;
-    max[tx + blockDim.x] = X[(y * xdims[1])]; //first of the row
-  }
-
-  // for(int stride = blockDim.x; stride >= 1; stride >>= 1){
-  //   __syncthreads();
-  //   if(tx < stride){
-  //     if(max[ty][tx] < max[ty][tx + stride]){
-  //       max_idx[ty][tx] = max_idx[ty][tx + stride];
-  //       max[ty][tx] = max[ty][tx + stride];
-  //     }
-  //   }
-  // }
-  for(int stride = blockDim.x; stride >= 1; stride >>= 1){
-    __syncthreads();
-    if(tx < stride){
-      if(max[tx] < max[tx + stride]){
-        max_idx[tx] = max_idx[tx + stride];
-        max[tx] = max[tx + stride];
+__global__ void argmax_kernel(const float *X, const int x0, const int x1, int *Y) {
+  int i= blockIdx.x * blockDim.x + threadIdx.x;
+  
+  if(i < x0) {
+    auto max_idx = 0;
+    auto max = X[i * x1];
+    for (const auto j : range(0, x1)) {
+      const auto elem = X[(i * x1) + j];
+      if (elem > max) {
+        max_idx = j;
+        max     = elem;
       }
     }
-  }
-
-  //__syncthreads();
-  if(y < xdims[0] && YVal[y] < max[0]) {
-      Y[y] = max_idx[0];
+    Y[i] = max_idx;
   }
 }
 
@@ -503,7 +434,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   float *device_d;
   float *device_e;
   float *device_f;
-  // int *device_out;
+  int *device_out;
 
   // device models
   float *device_conv1;
@@ -519,7 +450,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaMalloc((void **) &device_d, device_d_size * sizeof(float));
   cudaMalloc((void **) &device_e, device_e_size * sizeof(float));
   cudaMalloc((void **) &device_f, device_f_size * sizeof(float));
-  // cudaMalloc((void **) &device_out, FLAGS_batch_size * sizeof(int));
+  cudaMalloc((void **) &device_out, FLAGS_batch_size * sizeof(int));
 
   cudaMalloc((void **) &device_conv1, device_conv1_size * sizeof(float));
   cudaMalloc((void **) &device_conv2, device_conv2_size * sizeof(float));
@@ -656,18 +587,29 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* fully forward end */
 
   // copy back to host 
-  cudaMemcpy(f, device_f, device_f_size * sizeof(float), cudaMemcpyDeviceToHost);
+  // const auto start0 = now();
+  // // cudaMemcpy(f, device_f, device_f_size * sizeof(float), cudaMemcpyDeviceToHost);
+  // const auto end0 = now();
+  // const auto elapsed0 = std::chrono::duration<double, std::milli>(end0 - start0).count();
+  // std::cout << "Copy back to host in elapsed = " << elapsed0 << " milliseconds." << "\n";
 
   /* argmax start */
+  dim3 DimGrid9((FLAGS_batch_size - 1)/16 + 1, 1, 1);
+  dim3 DimBlock9(16, 1, 1);
   const auto start9 = now();
-  argmax(f, fdims, out);
-  // argmax_kernel<<<DimGridArg, DimBlockArg>>>(device_f, device_fdims, deviceOutVal, deviceOut);
+  // argmax(f, fdims, out);
+  argmax_kernel<<<DimGrid9, DimBlock9>>>(device_f, fdims[0], fdims[1], device_out);
   const auto end9 = now();
   const auto elapsed9 = std::chrono::duration<double, std::milli>(end9 - start9).count();
   std::cout << "Done with argmax in " << "elapsed = " << elapsed << " milliseconds." << "\n";
   /* argmax end */
 
-  // cudaMemcpy(out, deviceOut, fdims[0] * sizeof(int), cudaMemcpyDeviceToHost);
+  // copy back to host 
+  const auto start0 = now();
+  cudaMemcpy(out, device_out, FLAGS_batch_size * sizeof(int), cudaMemcpyDeviceToHost);
+  const auto end0 = now();
+  const auto elapsed0 = std::chrono::duration<double, std::milli>(end0 - start0).count();
+  std::cout << "Copy back to host in elapsed = " << elapsed0 << " milliseconds." << "\n";
 
   // free device memory
   cudaFree(device_x);
@@ -677,6 +619,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaFree(device_d);
   cudaFree(device_e);
   cudaFree(device_f);
+  cudaFree(device_out);
   cudaFree(device_conv1);
   cudaFree(device_conv2);
   cudaFree(device_fc1);

@@ -101,35 +101,39 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
   check_success(H5Fclose(file_id));
 }
 
-void unroll_w(float *w_in, float *w_out){
-	for(int row=0; row<32; row++){
-		for(int p=0; p < 5; p++){
-			for(int q=0; q<5; q++){
-                int woffset = p * 5 * 1 * 32 + q * 1 * 32 + row;
-				w_out[row*25+p*5+q] = w_in[woffset];
+void unroll_w(float *w_in, float *w_out, int w0, int w1, int w2, int w3){
+	for(int row=0; row<w3; row++){
+		for(int p=0; p < w0; p++){
+			for(int q=0; q<w1; q++){
+				for(int c=0; c<w2; c++){
+					int woffset = p * w1 * w2 * w3 + q * w2 * w3 + c*w3 + row;
+					int unroll = row*w2*w1*w0 + c*w1*w0 + p*w0 + q;
+					w_out[unroll] = w_in[woffset];
+				}
 			}
 		}
 	}
 }
 
-void unroll_x(float *x_in, float *x_out){
-	for(int batch=0; batch<10; batch++){
+void unroll_x(float *x_in, float *x_out, int x0, int x1, int x2, int x3, int y1, int y2, int y3){
+	for(int batch=0; batch<x0; batch++){
 		for(int p=0; p<5; p++){
 			for(int q=0; q<5; q++){
-				for(int h=0; h<24; h++){
-					for(int w=0; w<24; w++){
-						int h_unroll = p*5+q;
-						int w_unroll = h*24+w;
-						int unroll_offset = batch*25*24*24+h_unroll*24*24 + w_unroll;
-						int xoffset = batch*28*28 + (h+p)*28 + (w+q);
-						x_out[unroll_offset] = x_in[xoffset];
+				for(int c=0; c<x3; c++){
+					for(int h=0; h<y1; h++){
+						for(int w=0; w<y2; w++){
+							int h_unroll = p*5+q;
+							int w_unroll = h*y2+w;
+							int unroll_offset = batch*25*y1*y2+h_unroll*y1*y2 + w_unroll;
+							int xoffset = batch*x1*x2 + (h+p)*x2 + (w+q);
+							x_out[unroll_offset] = x_in[xoffset];
+						}
 					}
 				}
 			}
 		}
 	}
 }
-//x_out[batch*24*24*25 + (p*5+q)*24*24 + col] = x_in[batch*28*28 + (col/24+p)*28 + q + col%24];
 
 void unroll_mult(float *w_in, float *x_in, float *y_out){
 	for(int batch=0; batch<10; batch++){
@@ -147,18 +151,39 @@ void unroll_mult(float *w_in, float *x_in, float *y_out){
 
 // y_in is the unrolled form
 // y_out is the rerolled form
-void reroll_y(float *y_in, float *y_out){
-	for(int batch=0; batch<10; batch++){
-		for(int col=0; col<24; col++){
-			for(int row = 0; row<24; row++){
-				for(int img = 0; img<32; img++){
-					y_in[batch*24*24*32 + row*24*32 + col*32 + img] = y_out[batch*24*24*32 + row*24 + col + img*24*24];
+void reroll_y(float *y_in, float *y_out, int y0, int y1, int y2, int y3){
+	for(int batch=0; batch<y0; batch++){
+		for(int col=0; col<y2; col++){
+			for(int row = 0; row<y1; row++){
+				for(int img = 0; img<y3; img++){
+					int yoffset = batch*y1*y2*y3 + row*y2*y3 + col*y3 + img;
+					y_out[yoffset] = y_in[batch*y1*y2*y3 + row*y2 + col + img*y1*y2];
 				}
 			}
 		}
 	}
 }
+void reroll_matrix(float* Y_unroll, const int ydims[4], float* Y)
+{
+	for(int batch=0; batch<10; batch++){
+		for(int m = 0; m < ydims[3]; m++)
+		{
+			for(int w = 0; w < ydims[2]; w++)
+			{
+				for(int h = 0; h < ydims[1]; h++)
+				{
+					const auto unroll_offset = m * (ydims[1] * ydims[2]) 
+						+ h * (ydims[2]) + w;
 
+					const auto y_offset = h * (ydims[2] * ydims[3]) 
+						+ w * ydims[3] + m;
+
+					Y[y_offset+batch*24*24*32] = Y_unroll[unroll_offset+batch*32*24*24];
+				}
+			}
+		}
+	}
+}
 // From book chapter Figure 16.4
 static void conv_forward_valid(const float *X, const int xdims[4],
                                const float *W, const int wdims[4], float *Y,
@@ -280,18 +305,31 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
                        (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   auto a = zeros<float>(adims);
-  conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
+  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
 
   auto s_w = zeros<float>(32*25);
   auto s_x = zeros<float>(10*25*24*24);
   auto s_y = zeros<float>(10*32*24*24);
 
+  unroll_w(conv1, s_w, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3]);
+  //unroll_weights(conv1, conv1dims, s_w);
+  unroll_x(x, s_x, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3]);
+  //unroll_kernel(x, xdims, adims, s_x);
+  unroll_mult(s_w, s_x, s_y);
+  reroll_y(s_y, a, adims[0], adims[1], adims[2], adims[3]);
+  //reroll_matrix(s_y, adims, a);
+
+  /*
   unroll_w(conv1, s_w);
   unroll_x(x, s_x);
   unroll_mult(s_w, s_x, s_y);
   reroll_y(s_y, a);
 
-  /*
+void unroll_kernel(float* X, const int xdims[4], const int ydims[4], float* X_unroll)
+void unroll_weights(float * W, const int wdims[4], float * W_unroll)
+void reroll_matrix(float* Y_unroll, const int ydims[4], float* Y)
+
+
 void unroll_w(float *w_in, float *w_out){
 void unroll_x(float *x_in, float *x_out){
 void unroll_mult(float *w_in, float *x_in, float *y_out){

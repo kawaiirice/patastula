@@ -291,7 +291,7 @@ __global__ void conv_forward_valid_unrolled_X_kernel(const float *X, const int x
                                 float *Y, const int y0, const int y1) {
   
   int c, s, h_out, w_out, h_unroll, w_unroll, w_base;
-  int t = blockIdx.x * BLOCK_SIZE_CONVO + threadIdx.x;
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
   int H_out = x1-w0+1;
   int W_out = x2-w0+1;
   int W_unroll = H_out * W_out;
@@ -299,7 +299,7 @@ __global__ void conv_forward_valid_unrolled_X_kernel(const float *X, const int x
   int K = w0;
 
   if (t < C * W_unroll) {
-    c = t / W_unroll ;
+    c = t / W_unroll;
     s = t % W_unroll;
     h_out = s / W_out;
     w_out = s % W_out;
@@ -311,7 +311,7 @@ __global__ void conv_forward_valid_unrolled_X_kernel(const float *X, const int x
       for(int q = 0; q < K; q++) {
         w_unroll = w_base + p * K + q;
         const auto xoffset = /* n * x1 * x2 * x3 + */ (h_out+p) * x2 * x3 + (W_out+q) * x3 + c;
-        Y[w_unroll*W_out+h_unroll] = X[xoffset]; 
+        Y[w_unroll*W_unroll+h_unroll] = X[xoffset]; 
       }
     }
   }
@@ -330,10 +330,10 @@ __global__ void conv_forward_valid_unrolled_W_kernel(const float *X, const int x
   // int m = w % w3;
   int K = w0;
   if (t < w2*w3) {
-  //   m = t / w2;
-    // c = t % w2;
-    c = t / w3;
-    m = t % w3;
+    m = t / w2;
+    c = t % w2;
+    // c = t / w3;
+    // m = t % w3;
     // unroll W
     for(int p = 0; p < K; p++) {
       for(int q = 0; q < K; q++) {
@@ -623,8 +623,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   int device_aw_size = conv1dims[0]*conv1dims[1]*conv1dims[2]*conv1dims[3];
 
   const int adims_m[] = {conv1dims[3], H_out_1*W_out_1};
-  int device_am_size = xdims[1]*xdims[2]*conv1dims[2];
-  int device_am_total_size = H_out_1*W_out_1*conv1dims[3];
+  // int device_am_size = xdims[1]*xdims[2]*conv1dims[2];
+  int device_am_size = H_out_1*W_out_1*conv1dims[3]*xdims[0];
 
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
@@ -677,9 +677,9 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // device malloc
   cudaMalloc((void **) &device_ax, device_ax_size * sizeof(float));
   cudaMalloc((void **) &device_aw, device_aw_size * sizeof(float));
-  cudaMalloc((void **) &device_am, device_am_total_size * sizeof(float));
+  cudaMalloc((void **) &device_am, device_am_size * sizeof(float));
   cudaMalloc((void **) &device_x, device_x_size * sizeof(float));
-  cudaMalloc((void **) &device_a, device_am_total_size * sizeof(float));
+  cudaMalloc((void **) &device_a, device_a_size * sizeof(float));
   cudaMalloc((void **) &device_b, device_b_size * sizeof(float));
   cudaMalloc((void **) &device_c, device_c_size * sizeof(float));
   cudaMalloc((void **) &device_d, device_d_size * sizeof(float));
@@ -716,15 +716,16 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // for(int test = 0; test < adims_x[0]; test++)
   //   for(int test1 = 0; test1 < adims_x[1]; test1++)
   //   std::cout << "device_ax: " << ax_test[test][test1] << "\n";
+
   // unroll W
   num_threads = conv1dims[2]*conv1dims[3];
-  num_blocks = ceil((float)num_threads / 64);
+  num_blocks = ceil((float)num_threads / 64.0);
   dim3 DimGrid0W(num_blocks, 1, 1);
   dim3 DimBlock0W(64, 1, 1);
   conv_forward_valid_unrolled_W_kernel<<<DimGrid0W, DimBlock0W>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
                                                     device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
                                                     device_aw, adims_w[0], adims_w[1]);
-  // cudaDeviceSynchronize();
+  cudaDeviceSynchronize();
   // float* aw_test;
   // aw_test = allocate<float>(adims_w);
   // cudaMemcpy(aw_test, device_aw, adims_w[0]*adims_w[1]*sizeof(float), cudaMemcpyDeviceToHost);
@@ -736,13 +737,15 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   dim3 DimBlock0M(16, 16, 1);
   // for(int i = 0; i < xdims[0]; i++){
     // cudaMemcpy(device_x, &x[i*device_am_size], device_am_size, cudaMemcpyHostToDevice);
-  fully_forward_kernel<<<DimGrid0M, DimBlock0M>>>(device_aw, adims_w[0], adims_w[1], device_ax, adims_x[0], adims_x[1], device_am, adims_m[0], adims_m[1]); 
+  fully_forward_kernel<<<DimGrid0M, DimBlock0M>>>(device_aw, adims_w[0], adims_w[1], 
+                                                  device_ax, adims_x[0], adims_x[1], 
+                                                  device_am, adims_m[0], adims_m[1]);
   // }
-  float* am_test;
-  am_test = allocate<float>(adims_m);
-  cudaMemcpy(am_test, device_am, adims_m[0]*adims_m[1]*sizeof(float), cudaMemcpyDeviceToHost);
-  for(int test = 0; test < adims_m[0]*adims_m[1]; test++)
-    std::cout << "device_am: \n" << am_test[test];
+  // float* am_test;
+  // am_test = allocate<float>(adims_m);
+  // cudaMemcpy(am_test, device_am, adims_m[0]*adims_m[1]*sizeof(float), cudaMemcpyDeviceToHost);
+  // for(int test = 0; test < adims_m[0]*adims_m[1]; test++)
+  //   std::cout << "device_am: \n" << am_test[test];
 
   // unroll Y
   num_threads = H_out_1*W_out_1*conv1dims[3];
@@ -814,7 +817,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   dim3 DimBlock3(TILE_WIDTH_2, TILE_WIDTH_2, 1);
   dim3 DimGrid3(cdims[0], cdims[3], W_grid * H_grid);
   const auto start3 = now();
-    conv_forward_valid_shared_kernel_2<<<DimGrid3, DimBlock3, shmem_size3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
+  conv_forward_valid_shared_kernel_2<<<DimGrid3, DimBlock3, shmem_size3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
                                                     device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
                                                     device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
   // conv_forward_valid_kernel<<<DimGrid3, DimBlock3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 

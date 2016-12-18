@@ -101,6 +101,70 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
   check_success(H5Fclose(file_id));
 }
 
+void unroll_w(float *w_in, float *w_out, int w0, int w1, int w2, int w3){
+	for(int row=0; row<w3; row++){
+		for(int p=0; p < w0; p++){
+			for(int q=0; q<w1; q++){
+				for(int c=0; c<w2; c++){
+					int woffset = p * w1 * w2 * w3 + q * w2 * w3 + c*w3 + row;
+					int unroll = row*w2*w1*w0 + c*w1*w0 + p*w0 + q;
+					w_out[unroll] = w_in[woffset];
+				}
+			}
+		}
+	}
+}
+
+void unroll_x(float *x_in, float *x_out, int x0, int x1, int x2, int x3, int y1, int y2, int y3){
+	for(int batch=0; batch<x0; batch++){
+		for(int h=0; h<y1; h++){
+			for(int w=0; w<y2; w++){
+				// we fill x_unroll column by column
+				for(int p=0; p<5; p++){
+					for(int q=0; q<5; q++){
+						for(int c=0; c<x3; c++){
+							int h_unroll = p*5+q;
+							int w_unroll = h*y2+w;
+							int unroll_offset = batch*25*y1*y2+h_unroll*y1*y2 + w_unroll;
+							int xoffset = batch*x1*x2 + (h+p)*x2 + (w+q);
+							x_out[unroll_offset] = x_in[xoffset];
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+void unroll_mult(float *w_in, float *x_in, float *y_out, int x0, int x1, int x2, int x3, int y1, int y2, int y3){
+	for(int batch=0; batch<x0; batch++){
+		for(int row=0; row<y3; row++){
+			for(int col=0; col<y1*y2; col++){
+				float sum = 0;
+				for(int inner = 0; inner<25; inner++){
+					sum += w_in[row*25 + inner] * x_in[batch*25*y1*y2 + col + inner*y1*y2];
+				}
+				y_out[batch*y3*y1*y2 + row*y1*y2 + col] = sum;
+			}
+		}
+	}
+}
+
+// y_in is the unrolled form
+// y_out is the rerolled form
+void reroll_y(float *y_in, float *y_out, int y0, int y1, int y2, int y3){
+	for(int batch=0; batch<y0; batch++){
+		for(int col=0; col<y2; col++){
+			for(int row = 0; row<y1; row++){
+				for(int img = 0; img<y3; img++){
+					int yoffset = batch*y1*y2*y3 + row*y2*y3 + col*y3 + img;
+					y_out[yoffset] = y_in[batch*y1*y2*y3 + row*y2 + col + img*y1*y2];
+				}
+			}
+		}
+	}
+}
+/*
 __global__ void unroll_w(float *w_in, float *w_out, int w0, int w1, int w2, int w3){
 	int row = threadIdx.x + blockIdx.x*blockDim.x;
 	if(row < w3){
@@ -118,11 +182,6 @@ __global__ void unroll_w(float *w_in, float *w_out, int w0, int w1, int w2, int 
 }
 
 __global__ void unroll_x(float *x_in, float *x_out, int x0, int x1, int x2, int x3, int y1, int y2, int y3, int i){
-	/*
-	int batch = blockIdx.x;
-	int h = blockIdx.y;
-	int w = blockIdx.z;
-	*/
 	int batch = blockIdx.x;
 	int col = threadIdx.x + i*96;
 	int h = col/24;
@@ -180,6 +239,7 @@ __global__ void reroll_y(float *y_in, float *y_out, int y0, int y1, int y2, int 
 		}
 	//}
 }
+*/
 
 // From book chapter Figure 16.4
 static void conv_forward_valid(const float *X, const int xdims[4],
@@ -294,16 +354,7 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
   }
 }
 
-// Forward operation for the CNN, a combination of conv layer + average pooling
-// + relu
-void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
-                       float *fc2, int *out) {
-  // conv layer
-  const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
-                       (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
-  auto a = zeros<float>(adims);
-  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
-
+  /*
   float *device_w;
   float *device_conv1;
   cudaMalloc((void **)&device_w, 32*25*sizeof(float));
@@ -344,11 +395,30 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaMalloc((void **)&device_a_out, adims[0]*adims[1]*adims[2]*adims[3]*sizeof(float));
   reroll_y<<<DimGrid2, DimBlock2>>>(device_a, device_a_out, adims[0], adims[1], adims[2], adims[3]);
   cudaMemcpy(a, device_a_out, adims[0]*adims[1]*adims[2]*adims[3] * sizeof(float), cudaMemcpyDeviceToHost);
+  cudaFree(device_a);
+  cudaFree(device_a_out);
+  cudaFree(device_x);
+  cudaFree(d_unroll_x);
+  cudaFree(device_w);
+  */
+// Forward operation for the CNN, a combination of conv layer + average pooling
+// + relu
+void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
+                       float *fc2, int *out) {
+  // conv layer
+  const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
+                       (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
+  auto a = zeros<float>(adims);
+  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
 
-  //unroll_w(conv1, s_w, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3]);
-  //unroll_x(x, s_x, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3]);
-  //unroll_mult(s_w, s_x, s_y);
-  //reroll_y(s_y, a, adims[0], adims[1], adims[2], adims[3]);
+
+  auto s_w = zeros<float>(conv1dims[0] * conv1dims[1]*conv1dims[2]*conv1dims[3]);
+  auto s_x = zeros<float>(xdims[0]*xdims[1]*xdims[2]*xdims[3]);
+  auto s_y = zeros<float>(adims[0]*adims[1]*adims[2]*adims[3]);
+  unroll_w(conv1, s_w, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3]);
+  unroll_x(x, s_x, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3]);
+  unroll_mult(s_w, s_x, s_y, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3]);
+  reroll_y(s_y, a, adims[0], adims[1], adims[2], adims[3]);
 
   delete[] s_w;
   delete[] s_x;

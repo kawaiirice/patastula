@@ -101,12 +101,12 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
   check_success(H5Fclose(file_id));
 }
 
-void unroll_w(float *w_in, float *w_out, int k, int c, int m){
-	for(int row=0; row<m; row++){
-		for(int p=0; p < k; p++){
-			for(int q=0; q<k; q++){
-                int woffset = p * k * c * m + q * c * m + c * m + row;
-				w_out[row*25+p*k+q] = w_in[woffset];
+void unroll_w(float *w_in, float *w_out){
+	for(int row=0; row<32; row++){
+		for(int p=0; p < 5; p++){
+			for(int q=0; q<5; q++){
+                int woffset = p * 5 * 1 * 32 + q * 1 * 32 + row;
+				w_out[row*25+p*5+q] = w_in[woffset];
 			}
 		}
 	}
@@ -279,7 +279,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   auto s_x = zeros<float>(10*25*24*24);
   auto s_y = zeros<float>(10*32*24*24);
 
-  unroll_w(conv1, s_w, 5, 1, 32);
+  unroll_w(conv1, s_w);
   unroll_x(x, s_x);
   unroll_mult(s_w, s_x, s_y);
   reroll_y(s_y, a);

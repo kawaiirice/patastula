@@ -114,15 +114,22 @@ void unroll_w(float *w_in, float *w_out){
 
 void unroll_x(float *x_in, float *x_out){
 	for(int batch=0; batch<10; batch++){
-		for(int col = 0; col<24*24; col++){
-			for(int p=0; p<5; p++){
-				for(int q=0; q<5; q++){
-					x_out[batch*24*24*25 + (p*5+q)*24*24 + col] = x_in[batch*28*28 + (col/24+p)*28 + q + col%24];
+		for(int p=0; p<5; p++){
+			for(int q=0; q<5; q++){
+				for(int h=0; h<24; h++){
+					for(int w=0; w<24; w++){
+						int h_unroll = p*5+q;
+						int w_unroll = h*24+w;
+						int unroll_offset = batch*25*24*24+h_unroll*24*24 + w_unroll;
+						int xoffset = batch*28*28 + (h+p)*28 + (w+q);
+						x_out[unroll_offset] = x_in[xoffset];
+					}
 				}
 			}
 		}
 	}
 }
+//x_out[batch*24*24*25 + (p*5+q)*24*24 + col] = x_in[batch*28*28 + (col/24+p)*28 + q + col%24];
 
 void unroll_mult(float *w_in, float *x_in, float *y_out){
 	for(int batch=0; batch<10; batch++){
@@ -273,7 +280,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
                        (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   auto a = zeros<float>(adims);
-  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
+  conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
 
   auto s_w = zeros<float>(32*25);
   auto s_x = zeros<float>(10*25*24*24);
@@ -285,7 +292,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   reroll_y(s_y, a);
 
   /*
-void unroll_w(float *w_in, float *w_out, int k, int c, int m){
+void unroll_w(float *w_in, float *w_out){
 void unroll_x(float *x_in, float *x_out){
 void unroll_mult(float *w_in, float *x_in, float *y_out){
 void reroll_y(float *y_in, float *y_out){

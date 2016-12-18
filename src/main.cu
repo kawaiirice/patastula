@@ -101,8 +101,10 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
   check_success(H5Fclose(file_id));
 }
 
-void unroll_w(float *w_in, float *w_out, int w0, int w1, int w2, int w3){
-	for(int row=0; row<w3; row++){
+__global__ void unroll_w(float *w_in, float *w_out, int w0, int w1, int w2, int w3){
+	int row = threadIdx.x + blockIdx.x*blockDim.x;
+	if(row < w3){
+	//for(int row=0; row<w3; row++){
 		for(int p=0; p < w0; p++){
 			for(int q=0; q<w1; q++){
 				for(int c=0; c<w2; c++){
@@ -115,13 +117,23 @@ void unroll_w(float *w_in, float *w_out, int w0, int w1, int w2, int w3){
 	}
 }
 
-void unroll_x(float *x_in, float *x_out, int x0, int x1, int x2, int x3, int y1, int y2, int y3){
-	for(int batch=0; batch<x0; batch++){
-		for(int p=0; p<5; p++){
-			for(int q=0; q<5; q++){
-				for(int c=0; c<x3; c++){
-					for(int h=0; h<y1; h++){
-						for(int w=0; w<y2; w++){
+__global__ void unroll_x(float *x_in, float *x_out, int x0, int x1, int x2, int x3, int y1, int y2, int y3, int i){
+	/*
+	int batch = blockIdx.x;
+	int h = blockIdx.y;
+	int w = blockIdx.z;
+	*/
+	int batch = blockIdx.x;
+	int col = threadIdx.x + i*96;
+	int h = col/24;
+	int w = col%24;
+	//for(int batch=0; batch<x0; batch++){
+		//for(int h=0; h<y1; h++){
+			//for(int w=0; w<y2; w++){
+				// we fill x_unroll column by column
+				for(int p=0; p<5; p++){
+					for(int q=0; q<5; q++){
+						for(int c=0; c<x3; c++){
 							int h_unroll = p*5+q;
 							int w_unroll = h*y2+w;
 							int unroll_offset = batch*25*y1*y2+h_unroll*y1*y2 + w_unroll;
@@ -130,22 +142,26 @@ void unroll_x(float *x_in, float *x_out, int x0, int x1, int x2, int x3, int y1,
 						}
 					}
 				}
-			}
-		}
-	}
+			//}
+		//}
+	//}
 }
 
-void unroll_mult(float *w_in, float *x_in, float *y_out){
-	for(int batch=0; batch<10; batch++){
+__global__ void unroll_mult(float *w_in, float *x_in, float *y_out, int i){
+	int batch = blockIdx.x;
+	int col = threadIdx.x + i*96;
+	if(col < 24*24){
+	//for(int batch=0; batch<10; batch++){
 		for(int row=0; row<32; row++){
-			for(int col=0; col<24*24; col++){
+			//for(int col=0; col<24*24; col++){
 				float sum = 0;
 				for(int inner = 0; inner<25; inner++){
 					sum += w_in[row*25 + inner] * x_in[batch*25*24*24 + col + inner*24*24];
 				}
 				y_out[batch*32*24*24 + row*24*24 + col] = sum;
-			}
+			//}
 		}
+	//}
 	}
 }
 
@@ -163,27 +179,7 @@ void reroll_y(float *y_in, float *y_out, int y0, int y1, int y2, int y3){
 		}
 	}
 }
-void reroll_matrix(float* Y_unroll, const int ydims[4], float* Y)
-{
-	for(int batch=0; batch<10; batch++){
-		for(int m = 0; m < ydims[3]; m++)
-		{
-			for(int w = 0; w < ydims[2]; w++)
-			{
-				for(int h = 0; h < ydims[1]; h++)
-				{
-					const auto unroll_offset = m * (ydims[1] * ydims[2]) 
-						+ h * (ydims[2]) + w;
 
-					const auto y_offset = h * (ydims[2] * ydims[3]) 
-						+ w * ydims[3] + m;
-
-					Y[y_offset+batch*24*24*32] = Y_unroll[unroll_offset+batch*32*24*24];
-				}
-			}
-		}
-	}
-}
 // From book chapter Figure 16.4
 static void conv_forward_valid(const float *X, const int xdims[4],
                                const float *W, const int wdims[4], float *Y,
@@ -307,34 +303,45 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   auto a = zeros<float>(adims);
   //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
 
+  float *device_w;
+  float *device_conv1;
+  cudaMalloc((void **)&device_w, 32*25*sizeof(float));
+  cudaMalloc((void **)&device_conv1, 32*25*sizeof(float));
+  cudaMemcpy(device_conv1, conv1, 32*25 * sizeof(float), cudaMemcpyHostToDevice);
+  dim3 DimBlock(256, 1, 1);
+  dim3 DimGrid(ceil(32*25/256.0), 1, 1);
+
+  unroll_w<<<DimGrid, DimBlock>>>(device_conv1, device_w, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3]);
   auto s_w = zeros<float>(32*25);
+  cudaMemcpy(s_w, device_w, 32*25 * sizeof(float), cudaMemcpyDeviceToHost);
+
+  float *device_x;
+  float *d_unroll_x;
+  int dxsize = xdims[0]* xdims[1]* xdims[2]* xdims[3];
+  cudaMalloc((void **)&device_x, dxsize*sizeof(float));
+  cudaMemcpy(device_x, x, dxsize * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMalloc((void **)&d_unroll_x, xdims[0]*25*24*24*sizeof(float));
+
+  float *device_a;
+  cudaMalloc((void **)&device_a, adims[0]*adims[1]*adims[2]*adims[3]*sizeof(float));
+
+  dim3 DimBlock1(96, 1, 1);
+  dim3 DimGrid1(xdims[0], 1, 1);
+
+  //for(int i=0; 
+  for(int i=0; i<6; i++){
+	  unroll_x<<<DimGrid1, DimBlock1>>> (device_x, d_unroll_x, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3], i);
+	  unroll_mult<<<DimGrid1, DimBlock1>>>(device_w, d_unroll_x, device_a, i);
+  }
   auto s_x = zeros<float>(10*25*24*24);
+  cudaMemcpy(s_x, d_unroll_x, xdims[0]*25*24*24 * sizeof(float), cudaMemcpyDeviceToHost);
   auto s_y = zeros<float>(10*32*24*24);
+  cudaMemcpy(s_y, device_a, adims[0]*adims[1]*adims[2]*adims[3] * sizeof(float), cudaMemcpyDeviceToHost);
 
-  unroll_w(conv1, s_w, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3]);
-  //unroll_weights(conv1, conv1dims, s_w);
-  unroll_x(x, s_x, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3]);
-  //unroll_kernel(x, xdims, adims, s_x);
-  unroll_mult(s_w, s_x, s_y);
+  //unroll_w(conv1, s_w, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3]);
+  //unroll_x(x, s_x, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3]);
+  //unroll_mult(s_w, s_x, s_y);
   reroll_y(s_y, a, adims[0], adims[1], adims[2], adims[3]);
-  //reroll_matrix(s_y, adims, a);
-
-  /*
-  unroll_w(conv1, s_w);
-  unroll_x(x, s_x);
-  unroll_mult(s_w, s_x, s_y);
-  reroll_y(s_y, a);
-
-void unroll_kernel(float* X, const int xdims[4], const int ydims[4], float* X_unroll)
-void unroll_weights(float * W, const int wdims[4], float * W_unroll)
-void reroll_matrix(float* Y_unroll, const int ydims[4], float* Y)
-
-
-void unroll_w(float *w_in, float *w_out){
-void unroll_x(float *x_in, float *x_out){
-void unroll_mult(float *w_in, float *x_in, float *y_out){
-void reroll_y(float *y_in, float *y_out){
-*/
 
   delete[] s_w;
   delete[] s_x;

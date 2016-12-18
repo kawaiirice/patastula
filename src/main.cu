@@ -367,10 +367,26 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
   }
 }
 
-__global__ void argmax_kernel(const float *X, const int x0, const int x1, int *Y) {
+__global__ void argmax_kernel1(const float *X, const int x0, const int x1, int *Y) {
   int i= blockIdx.x * blockDim.x + threadIdx.x;
   
-  if(i < x0) {
+  if(i < x0/2) {
+    auto max_idx = 0;
+    auto max = X[i * x1];
+    for (const auto j : range(0, x1)) {
+      const auto elem = X[(i * x1) + j];
+      if (elem > max) {
+        max_idx = j;
+        max     = elem;
+      }
+    }
+    Y[i] = max_idx;
+  }
+}
+__global__ void argmax_kernel2(const float *X, const int x0, const int x1, int *Y) {
+  int i= blockIdx.x * blockDim.x + threadIdx.x;
+  
+  if(i < x0 && i >= x0/2) {
     auto max_idx = 0;
     auto max = X[i * x1];
     for (const auto j : range(0, x1)) {
@@ -386,7 +402,10 @@ __global__ void argmax_kernel(const float *X, const int x0, const int x1, int *Y
 
 // Forward operation for the CNN, a combination of conv layer + average pooling + relu
 void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
-                       float *fc2, int *out) {
+                       float *fc2, int *out,
+					   float *device_x, float *device_a, float *device_b, float *device_c,
+					   float *device_d, float *device_e, float *device_f, int *device_out,
+					   float *device_conv1, float *device_conv2, float *device_fc1, float *device_fc2){
   /* Host */ 
   // data dimensions and size
   const int pool_size = 2;
@@ -398,16 +417,12 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   int device_fc2_size = fc2dims[0] * fc2dims[1];
 
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
-  int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
 
   const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3]};
-  int device_b_size = bdims[0]*bdims[1]*bdims[2]*bdims[3];
 
   const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1), (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
-  int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
 
   const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size, cdims[3]};
-  int device_d_size = ddims[0]*ddims[1]*ddims[2]*ddims[3];
 
   const int ddims2[] = {ddims[0], ddims[1] * ddims[2] * ddims[3]}; // reshape for matrix mult section
 
@@ -415,7 +430,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   int device_e_size = edims[0]*edims[1];
 
   const int fdims[] = {edims[0], fc2dims[1]};
-  int device_f_size = fdims[0]*fdims[1];
 
   // allocating host memory
   // auto a = zeros<float>(adims);
@@ -425,22 +439,12 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // auto e = zeros<float>(edims);
   // auto f = zeros<float>(fdims);
 
+  cudaStream_t stream1, stream2;
+  cudaStreamCreate(&stream1);
+  cudaStreamCreate(&stream2);
+
   /* Device */
   // device data
-  float* device_x;
-  float *device_a;
-  float *device_b;
-  float *device_c;
-  float *device_d;
-  float *device_e;
-  float *device_f;
-  int *device_out;
-
-  // device models
-  float *device_conv1;
-  float *device_conv2;
-  float *device_fc1;
-  float *device_fc2;
 
   // pin memory
   // cudaHostRegister(out, FLAGS_batch_size * sizeof(int), cudaHostRegisterDefault);
@@ -450,20 +454,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaHostRegister(fc1, device_fc1_size * sizeof(float), cudaHostRegisterDefault);
   cudaHostRegister(fc2, device_fc2_size * sizeof(float), cudaHostRegisterDefault);
 
-  // device malloc
-  cudaMalloc((void **) &device_x, device_x_size * sizeof(float));
-  cudaMalloc((void **) &device_a, device_a_size * sizeof(float));
-  cudaMalloc((void **) &device_b, device_b_size * sizeof(float));
-  cudaMalloc((void **) &device_c, device_c_size * sizeof(float));
-  cudaMalloc((void **) &device_d, device_d_size * sizeof(float));
-  cudaMalloc((void **) &device_e, device_e_size * sizeof(float));
-  cudaMalloc((void **) &device_f, device_f_size * sizeof(float));
-  cudaMalloc((void **) &device_out, FLAGS_batch_size * sizeof(int));
-
-  cudaMalloc((void **) &device_conv1, device_conv1_size * sizeof(float));
-  cudaMalloc((void **) &device_conv2, device_conv2_size * sizeof(float));
-  cudaMalloc((void **) &device_fc1, device_fc1_size * sizeof(float));
-  cudaMalloc((void **) &device_fc2, device_fc2_size * sizeof(float));
 
   // copy host to device
   cudaMemcpy(device_x, x, device_x_size * sizeof(float), cudaMemcpyHostToDevice);
@@ -613,7 +603,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   dim3 DimBlock9(16, 1, 1);
   const auto start9 = now();
   // argmax(f, fdims, out);
-  argmax_kernel<<<DimGrid9, DimBlock9>>>(device_f, fdims[0], fdims[1], device_out);
+  argmax_kernel1<<<DimGrid9, DimBlock9, 0, stream1>>>(device_f, fdims[0], fdims[1], device_out);
+  argmax_kernel2<<<DimGrid9, DimBlock9, 0, stream2>>>(device_f, fdims[0], fdims[1], device_out);
   const auto end9 = now();
   const auto elapsed9 = std::chrono::duration<double, std::milli>(end9 - start9).count();
   std::cout << "Done with argmax in " << "elapsed = " << elapsed << " milliseconds." << "\n";
@@ -621,26 +612,14 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // cudaHostRegister(out, FLAGS_batch_size * sizeof(int), cudaHostRegisterDefault);
   // copy back to host 
   const auto start0 = now();
-  cudaMemcpy(out, device_out, FLAGS_batch_size * sizeof(int), cudaMemcpyDeviceToHost);
+  cudaMemcpyAsync(out, device_out, FLAGS_batch_size/2 * sizeof(int), cudaMemcpyDeviceToHost, stream1);
+  cudaMemcpyAsync(&out[FLAGS_batch_size/2], &device_out[FLAGS_batch_size/2], FLAGS_batch_size/2 * sizeof(int), cudaMemcpyDeviceToHost, stream2);
   const auto end0 = now();
   const auto elapsed0 = std::chrono::duration<double, std::milli>(end0 - start0).count();
   std::cout << "Copy back to host in elapsed = " << elapsed0 << " milliseconds." << "\n";
 
   // cudaHostUnregister(out);
 
-  // free device memory
-  cudaFree(device_x);
-  cudaFree(device_a);
-  cudaFree(device_b);
-  cudaFree(device_c);
-  cudaFree(device_d);
-  cudaFree(device_e);
-  cudaFree(device_f);
-  cudaFree(device_out);
-  cudaFree(device_conv1);
-  cudaFree(device_conv2);
-  cudaFree(device_fc1);
-  cudaFree(device_fc2);
 
   // free host memory
   // delete[] a;
@@ -696,14 +675,90 @@ int main(int argc, char **argv) {
 
   // Perform foward opertion
   int *out = zeros<int>(FLAGS_batch_size);
+  
+  // Malloc for forward_operation
+  // data dimensions and size
+  const int pool_size = 2;
+
+  int device_x_size = xdims[0] * xdims[1] * xdims[2] * xdims[3];
+  int device_conv1_size = conv1dims[0] * conv1dims[1] * conv1dims[2] * conv1dims[3];
+  int device_conv2_size = conv2dims[0] * conv2dims[1] * conv2dims[2] * conv2dims[3];
+  int device_fc1_size = fc1dims[0] * fc1dims[1];
+  int device_fc2_size = fc2dims[0] * fc2dims[1];
+
+  const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
+  int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
+
+  const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3]};
+  int device_b_size = bdims[0]*bdims[1]*bdims[2]*bdims[3];
+
+  const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1), (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
+  int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
+
+  const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size, cdims[3]};
+  int device_d_size = ddims[0]*ddims[1]*ddims[2]*ddims[3];
+
+
+  const int edims[] = {ddims[0], fc1dims[1]};
+  int device_e_size = edims[0]*edims[1];
+
+  const int fdims[] = {edims[0], fc2dims[1]};
+  int device_f_size = fdims[0]*fdims[1];
+  /* Device */
+  // device data
+  float* device_x;
+  float *device_a;
+  float *device_b;
+  float *device_c;
+  float *device_d;
+  float *device_e;
+  float *device_f;
+  int *device_out;
+
+  // device models
+  float *device_conv1;
+  float *device_conv2;
+  float *device_fc1;
+  float *device_fc2;
+
+  // device malloc
+  cudaMalloc((void **) &device_x, device_x_size * sizeof(float));
+  cudaMalloc((void **) &device_a, device_a_size * sizeof(float));
+  cudaMalloc((void **) &device_b, device_b_size * sizeof(float));
+  cudaMalloc((void **) &device_c, device_c_size * sizeof(float));
+  cudaMalloc((void **) &device_d, device_d_size * sizeof(float));
+  cudaMalloc((void **) &device_e, device_e_size * sizeof(float));
+  cudaMalloc((void **) &device_f, device_f_size * sizeof(float));
+  cudaMalloc((void **) &device_out, FLAGS_batch_size * sizeof(int));
+
+  cudaMalloc((void **) &device_conv1, device_conv1_size * sizeof(float));
+  cudaMalloc((void **) &device_conv2, device_conv2_size * sizeof(float));
+  cudaMalloc((void **) &device_fc1, device_fc1_size * sizeof(float));
+  cudaMalloc((void **) &device_fc2, device_fc2_size * sizeof(float));
 
   // get start time
   const auto start = now();
 
-  forward_operation(x, conv1, conv2, fc1, fc2, out);
+  forward_operation(x, conv1, conv2, fc1, fc2, out,
+					device_x, device_a, device_b, device_c, device_d, device_e, device_f, device_out,
+					device_conv1, device_conv2, device_fc1, device_fc2);
 
   // get end time
   const auto end = now();
+
+  // free device memory
+  cudaFree(device_x);
+  cudaFree(device_a);
+  cudaFree(device_b);
+  cudaFree(device_c);
+  cudaFree(device_d);
+  cudaFree(device_e);
+  cudaFree(device_f);
+  cudaFree(device_out);
+  cudaFree(device_conv1);
+  cudaFree(device_conv2);
+  cudaFree(device_fc1);
+  cudaFree(device_fc2);
 
   // get elapsed time in milliseconds
   const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();

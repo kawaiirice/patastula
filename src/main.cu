@@ -8,7 +8,6 @@
 #include <valarray>
 
 #include <hdf5.h>
-#include <wb.h>
 
 #include "range.hpp"
 #include "utils.hpp"
@@ -17,8 +16,10 @@
 #define NUM_COLS 28
 #define NUM_CHANNELS 1
 #define NUM_DIGITS 10
-#define BLOCK_SIZE 512
-#define TILE_WIDTH 8
+#define BLOCK_SIZE 16
+#define TILE_WIDTH_1 16
+#define TILE_WIDTH_2 8
+#define BLOCK_SIZE_CONVO 64
 
 static int FLAGS_batch_size = 10000;
 static std::string FLAGS_testdata{};
@@ -136,76 +137,136 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
 //   }
 // }
 
-__global__ void conv_forward_valid_kernel(const float *X, const int xdims[4],
-                               const float *W, const int wdims[4], float *Y,
-                               const int ydims[4]) {
-	const auto filter_h   = wdims[0];
-	const auto filter_w   = wdims[1];
-	const auto in_channel = wdims[2];
+// __global__ void conv_forward_valid_kernel(const float *X, const int x0, const int x1, const int x2, const int x3,
+//                                const float *W, const int w0, const int w1, const int w2, const int w3, 
+//                                float *Y, const int y0, const int y1, const int y2, const int y3) {
+//   const auto filter_h   = w0;
+//   const auto filter_w   = w1;
+//   const auto in_channel = w2;
 
-	int i = blockIdx.x;
-	int m = blockIdx.y;
-	int idx = blockIdx.z*blockDim.x + threadIdx.x;
-	int h = idx/ydims[2];
-	int w = idx%ydims[2];
-	if(h < ydims[1] && w < ydims[2]){
-    // float acc = 0;
-		const auto yoffset = ((i * ydims[1] + h) * ydims[2] + w) * ydims[3] + m;
-		for (const auto p : range(0, filter_h)) {
-			for (const auto q : range(0, filter_w)) {
-				for (const auto c : range(0, in_channel)) {
-				const auto xoffset = i * xdims[1] * xdims[2] * xdims[3] +
-								 (h + p) * xdims[2] * xdims[3] +
-								 (w + q) * xdims[3] + c;
-				const auto woffset = p * wdims[1] * wdims[2] * wdims[3] +
-								 q * wdims[2] * wdims[3] + c * wdims[3] + m;
-				Y[yoffset] += X[xoffset] * W[woffset];
-        // acc += X[xoffset] * W[woffset];
-				}
-			}
-		}
-    // Y[yoffset] = acc;
-	}
-}
+//   int i = blockIdx.x;
+//   int m = blockIdx.y;
+//   int idx = blockIdx.z*blockDim.x + threadIdx.x;
+//   int h = idx/y2;
+//   int w = idx%y2;
+//   if(h < y1 && w < y2){
+//     float acc = 0;
+//     const auto yoffset = ((i * y1 + h) * y2 + w) * y3 + m;
+//     for (const auto p : range(0, filter_h)) {
+//       for (const auto q : range(0, filter_w)) {
+//         for (const auto c : range(0, in_channel)) {
+//           const auto xoffset = i * x1 * x2 * x3 + (h + p) * x2 * x3 + (w + q) * x3 + c;
+//           const auto woffset = p * w1 * w2 * w3 + q * w2 * w3 + c * w3 + m;
+//           // Y[yoffset] += X[xoffset] * W[woffset];
+//           acc += X[xoffset] * W[woffset];
+//         }
+//       }
+//     }
+//     Y[yoffset] = acc;
+//   }
+// }
 
-__global__ void conv_forward_valid_shared_kernel(const float *X, const int xdims[4],
-                               const float *W, const int wdims[4], float *Y,
-                               const int ydims[4]) {
+// __global__ void conv_forward_valid_shared_kernel_1(const float *X, const int x0, const int x1, const int x2, const int x3, 
+//                                const float *W, const int w0, const int w1, const int w2, const int w3, 
+//                                float *Y, const int y0, const int y1, const int y2, const int y3) {
 
-    const auto filter_h   = wdims[0];
-    const auto in_channel = wdims[2];
+//     const auto filter_h   = w0;
+//     const auto in_channel = w2;
 
-    int W_grid = (ydims[1]-1)/TILE_WIDTH+1;
+//     int W_grid = (y1-1)/TILE_WIDTH_1+1;
 
-    int X_TILE_WIDTH=TILE_WIDTH+filter_h-1;
+//     int X_TILE_WIDTH=TILE_WIDTH_1+filter_h-1;
+//     extern __shared__ float  shmem[];
+//     float *X_shared=&shmem[0];
+//     float * W_shared=&shmem[X_TILE_WIDTH*X_TILE_WIDTH];
+
+//     int n = blockIdx.x; // samples in batch
+//     int m = blockIdx.y; // output feature map
+//     int h_base = (blockIdx.z / W_grid) * TILE_WIDTH_1;
+//     int w_base = (blockIdx.z % W_grid) * TILE_WIDTH_1;
+//     int h_0 = threadIdx.y;
+//     int w_0 = threadIdx.x;
+//     int h = h_base + h_0; // output feature map height
+//     int w = w_base + w_0; // output feature map width
+
+    
+//     if(h < y1 && w < y2){
+//       float acc = 0;
+//       for (const auto c : range(0, in_channel)){
+//         // initialize w_shared
+//         if(h_0 < 5 && w_0 < 5){
+//           const auto woffset = h_0 * w1 * w2 * w3 +w_0 * w2 * w3 + c * w3 + m;
+//           W_shared[h_0 * 5 + w_0]=W[woffset];
+//         }
+//         __syncthreads();
+
+//         // initialize x_shared
+        
+//         for (int i = h; i < (h_base + X_TILE_WIDTH); i += TILE_WIDTH_1){
+//           for(int j = w; j < (w_base + X_TILE_WIDTH); j += TILE_WIDTH_1){
+//             // if(i<x1 && j<x2){
+//             const auto xoffset = n * x1 * x2 * x3 +i * x2 * x3 +j * x3 + c;
+//               X_shared[(i - h_base) * X_TILE_WIDTH + j - w_base] = X[xoffset];  
+//             // } 
+//             // else
+//             //   X_shared[(i - h_base) * X_TILE_WIDTH + j - w_base]=0;
+            
+//             }   
+//           }
+        
+//         __syncthreads();
+        
+//         // convolution
+//         for(int p=0;p<5;p++){
+//           for (int q=0;q<5;q++){
+//             acc += X_shared[(h_0+p)*X_TILE_WIDTH+w_0+q]*W_shared[p*5+q];    
+//           }
+//         }
+//         __syncthreads();
+//       }
+//       const auto yoffset = ((n * y1 + h) * y2 + w) * y3 + m;
+//       Y[yoffset]=acc;       
+//   }
+// }
+
+__global__ void conv_forward_valid_shared_kernel_2(const float *X, const int x0, const int x1, const int x2, const int x3, 
+                               const float *W, const int w0, const int w1, const int w2, const int w3, 
+                               float *Y, const int y0, const int y1, const int y2, const int y3) {
+
+    const auto filter_h   = w0;
+    const auto in_channel = w2;
+
+    int W_grid = (y1-1)/TILE_WIDTH_2+1;
+
+    int X_TILE_WIDTH=TILE_WIDTH_2+filter_h-1;
     extern __shared__ float  shmem[];
     float *X_shared=&shmem[0];
     float * W_shared=&shmem[X_TILE_WIDTH*X_TILE_WIDTH];
 
     int n = blockIdx.x; // samples in batch
     int m = blockIdx.y; // output feature map
-    int h_base = (blockIdx.z / W_grid) * TILE_WIDTH;
-    int w_base = (blockIdx.z % W_grid) * TILE_WIDTH;
-    int h0 = threadIdx.y;
-    int w0 = threadIdx.x;
-    int h = h_base + h0; // output feature map height
-    int w = w_base + w0; // output feature map width
+    int h_base = (blockIdx.z / W_grid) * TILE_WIDTH_2;
+    int w_base = (blockIdx.z % W_grid) * TILE_WIDTH_2;
+    int h_0 = threadIdx.y;
+    int w_0 = threadIdx.x;
+    int h = h_base + h_0; // output feature map height
+    int w = w_base + w_0; // output feature map width
 
-    // 
-    if(h < ydims[1] && w < ydims[2]){
+    
+    if(h < y1 && w < y2){
       float acc = 0;
       for (const auto c : range(0, in_channel)){
         // initialize w_shared
-        if(h0 < 5 && w0 < 5){
-          const auto woffset = h0 * wdims[1] * wdims[2] * wdims[3] +w0 * wdims[2] * wdims[3] + c * wdims[3] + m;
-          W_shared[h0 * 5 + w0]=W[woffset];
+        if(h_0 < 5 && w_0 < 5){
+          const auto woffset = h_0 * w1 * w2 * w3 +w_0 * w2 * w3 + c * w3 + m;
+          W_shared[h_0 * 5 + w_0]=W[woffset];
         }
         __syncthreads();
 
         // initialize x_shared
-        for (int i = h;i < h_base + X_TILE_WIDTH; i += TILE_WIDTH){
-          for(int j = w;j < w_base + X_TILE_WIDTH; j += TILE_WIDTH){ 
-            const auto xoffset = n * xdims[1] * xdims[2] * xdims[3] +i * xdims[2] * xdims[3] +j * xdims[3] + c;
+        for (int i = h;i < h_base + X_TILE_WIDTH; i += TILE_WIDTH_2){
+          for(int j = w;j < w_base + X_TILE_WIDTH; j += TILE_WIDTH_2){ 
+            const auto xoffset = n * x1 * x2 * x3 +i * x2 * x3 +j * x3 + c;
               X_shared[(i-h_base)* X_TILE_WIDTH+j-w_base]=X[xoffset];
             }   
           }
@@ -214,14 +275,98 @@ __global__ void conv_forward_valid_shared_kernel(const float *X, const int xdims
         // convolution
         for(int p=0;p<5;p++){
           for (int q=0;q<5;q++){
-            acc += X_shared[(h0+p)*X_TILE_WIDTH+w0+q]*W_shared[p*5+q];    
+            acc += X_shared[(h_0+p)*X_TILE_WIDTH+w_0+q]*W_shared[p*5+q];    
           }
         }
         __syncthreads();
       }
-      const auto yoffset = ((n * ydims[1] + h) * ydims[2] + w) * ydims[3] + m;
+      const auto yoffset = ((n * y1 + h) * y2 + w) * y3 + m;
       Y[yoffset]=acc;       
   }
+}
+
+// checked 
+__global__ void conv_forward_valid_unrolled_X_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, 
+                                const float *W, const int w0, const int w1, const int w2, const int w3, 
+                                float *Y, const int y0, const int y1, const int y2, const int y3) {
+  
+  int c, s, h_out, w_out, h_unroll, w_unroll, w_base;
+  int t = blockIdx.x * BLOCK_SIZE_CONVO + threadIdx.x;
+  int H_out = x1-w0+1;
+  int W_out = x2-w0+1;
+  int W_unroll = H_out * W_out;
+  int C = x3;
+  int K = w0;
+
+  if (t < C * W_unroll) {
+    c = t / W_unroll ;
+    s = t % W_unroll;
+    h_out = s / W_out;
+    w_out = s % W_out;
+    h_unroll = h_out * W_out + w_out; 
+    w_base = c * K * K;
+
+    // unroll X
+    for(int p = 0; p < K; p++) {
+      for(int q = 0; q < K; q++) {
+        w_unroll = w_base + p * K + q;
+        const auto xoffset = /* n * x1 * x2 * x3 + */ (h_out+p) * x2 * x3 + (W_out+q) * x3 + c;
+        Y[w_unroll*W_out+h_unroll] = X[xoffset]; 
+      }
+    }
+  }
+}
+
+// checked
+__global__ void conv_forward_valid_unrolled_W_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, 
+                                const float *W, const int w0, const int w1, const int w2, const int w3, 
+                                float *Y, const int y0, const int y1, const int y2, const int y3) {
+
+  int t = blockIdx.x * BLOCK_SIZE_CONVO + threadIdx.x;
+  int m, c;
+  // int h = t / w0;
+  // int w = t % w0;
+  // int c = w / w3;
+  // int m = w % w3;
+  int K = w0;
+  if (t < w2*w3) {
+    m = t / w2;
+    c = t % w2;
+    // unroll W
+    for(int p = 0; p < K; p++) {
+      for(int q = 0; q < K; q++) {
+        // const auto woffset_before = (h+p) * w1 * w2 * w3 + (w+q) * x2 * x3 + c * x3 + m;
+        // const auto woffset_after = m * y1 * y2 * y3 + c * y2 * y3 + (h+p) * y3 + (w+q);  
+        const auto woffset_before = p * w1 * w2 * w3 + q * w2 * w3 + c * w3 + m;
+        const auto woffset_after = m * w0 * w1 * w2 + c * w0 * w1 + p * w0 + q;
+        Y[woffset_after] = W[woffset_before];
+      }
+    }
+  }
+}
+
+// __global void conv_forward_valid_unrolled_Y_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, 
+//                                float *Y, const int y0, const int y1, const int y2, const int y3){
+//   int t = blockIdx.x * BLOCK_SIZE_CONVO + threadIdx.x;
+//   int h, w;
+//   int H_out = x1-w0+1;
+//   int W_out = x2-w0+1;
+//   if(t < H_out*W_out){
+//     h = t / H_out;
+//     w = t % H_out;
+//     for(int p = 0; p < w3; p++){
+//       const auto offsetX = p * H_out * W_out + t;
+//       const auto offsetY = h * W_out * w3 + w * w3 + p;
+//       Y[offsetY] = X[offsetX];
+//     }
+//   } 
+// }
+
+
+__global__ void relu_kernel(float *X, int size){
+  int row = blockIdx.x*blockDim.x+threadIdx.x;
+  if(row < size)
+    X[row] = (X[row] < 0) ? 0 : X[row];
 }
 
 // // Recified linear unit 4d
@@ -231,11 +376,11 @@ __global__ void conv_forward_valid_shared_kernel(const float *X, const int xdims
 //   }
 // }
 
-__global__ void relu4_kernel(float *X, const int xdims[4]){
-  int row = blockIdx.x*blockDim.x+threadIdx.x;
-  if(row < xdims[0] * xdims[1] * xdims[2] * xdims[3])
-    X[row] = (X[row] < 0) ? 0 : X[row];
-}
+// __global__ void relu4_kernel(float *X, const int xdims[4]){
+//  int row = blockIdx.x*blockDim.x+threadIdx.x;
+//  if(row < xdims[0] * xdims[1] * xdims[2] * xdims[3])
+//    X[row] = (X[row] < 0) ? 0 : X[row];
+// }
 
 // // Recified linear unit 2d
 // static void relu2(float *X, const int xdims[2]) {
@@ -244,59 +389,55 @@ __global__ void relu4_kernel(float *X, const int xdims[4]){
 //   }
 // }
 
-__global__ void relu2_kernel(float *X, const int xdims[2]){
- 	int i = blockIdx.x*blockDim.x+threadIdx.x;
- 	if(i < xdims[0] * xdims[1])
- 		X[i] = (X[i] < 0) ? 0 : X[i];
-}
+// __global__ void relu2_kernel(float *X, const int xdims[2]){
+//    int i = blockIdx.x*blockDim.x+threadIdx.x;
+//    if(i < xdims[0] * xdims[1])
+//      X[i] = (X[i] < 0) ? 0 : X[i];
+// }
 
 // // From book chapter Figure 16.5
-static void average_pool(const float *X, const int xdims[4],
-                         const int pool_size, float *Y, const int ydims[4]) {
-  for (const auto i : range(0, ydims[0])) {
-    for (const auto m : range(0, ydims[3])) {
-      for (const auto w : range(0, ydims[2])) {
-        for (const auto h : range(0, ydims[1])) {
-          for (const auto p : range(0, pool_size)) {
-            for (const auto q : range(0, pool_size)) {
-              const auto yoffset =
-                  ((i * ydims[1] + h) * ydims[2] + w) * ydims[3] + m;
-              const auto xoffset = i * xdims[1] * xdims[2] * xdims[3] +
-                                   (pool_size * h + p) * xdims[2] * xdims[3] +
-                                   (pool_size * w + q) * xdims[3] + m;
-              Y[yoffset] += X[xoffset] / (1.0f * pool_size * pool_size);
-            }
-          }
-        }
+// static void average_pool(const float *X, const int xdims[4],
+//                          const int pool_size, float *Y, const int ydims[4]) {
+//   for (const auto i : range(0, ydims[0])) {
+//     for (const auto m : range(0, ydims[3])) {
+//       for (const auto w : range(0, ydims[2])) {
+//         for (const auto h : range(0, ydims[1])) {
+//           for (const auto p : range(0, pool_size)) {
+//             for (const auto q : range(0, pool_size)) {
+//               const auto yoffset =
+//                   ((i * ydims[1] + h) * ydims[2] + w) * ydims[3] + m;
+//               const auto xoffset = i * xdims[1] * xdims[2] * xdims[3] +
+//                                    (pool_size * h + p) * xdims[2] * xdims[3] +
+//                                    (pool_size * w + q) * xdims[3] + m;
+//               Y[yoffset] += X[xoffset] / (1.0f * pool_size * pool_size);
+//             }
+//           }
+//         }
+//       }
+//     }
+//   }
+// }
+
+__global__ void average_pool_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, const int pool_size, 
+                                    float *Y, const int y0, const int y1, const int y2, const int y3){
+  int i = blockIdx.x;
+  int m = blockIdx.y;
+  int idx = blockIdx.z*blockDim.x + threadIdx.x;
+  int h = idx/y2;
+  int w = idx%y2;
+
+  if(h < y1 && w < y2){
+    const auto yoffset = ((i * y1 + h) * y2 + w) * y3 + m;
+    float acc = 0;
+    for (const auto p : range(0, pool_size)) {
+      for (const auto q : range(0, pool_size)) {
+        const auto xoffset = i * x1 * x2 * x3 + (pool_size * h + p) * x2 * x3 + (pool_size * w + q) * x3 + m;
+        acc += X[xoffset] / (1.0f * pool_size * pool_size);
+        // Y[yoffset] += X[xoffset] / (1.0f * pool_size * pool_size);
       }
     }
+    Y[yoffset] = acc;
   }
-}
-
-__global__ void average_pool_kernel(const float *X, const int xdims[4],
-                         const int pool_size, float *Y, const int ydims[4], const int w_grid) {
-	int i = blockIdx.x;
-	int m = blockIdx.y;
-	int idx = blockIdx.z*blockDim.x + threadIdx.x;
-	int h = idx/ydims[2];
-	int w = idx%ydims[2];
-	//int h = blockIdx.z/(w_grid) + threadIdx.y;
-	//int w = blockIdx.z%(w_grid) + threadIdx.x;
-	if(h < ydims[1] && w < ydims[2]){
-	  const auto yoffset = ((i * ydims[1] + h) * ydims[2] + w) * ydims[3] + m;
-	  //float acc = 0;
-	  for (const auto p : range(0, pool_size)) {
-		for (const auto q : range(0, pool_size)) {
-		  const auto xoffset = i * xdims[1] * xdims[2] * xdims[3] +
-							   (pool_size * h + p) * xdims[2] * xdims[3] +
-							   (pool_size * w + q) * xdims[3] + m;
-		  //acc += X[xoffset] / (1.0f * pool_size * pool_size);
-		  Y[yoffset] += X[xoffset] / (1.0f * pool_size * pool_size);
-		  //atomicAdd(&Y[yoffset], X[xoffset]/(1.0f * pool_size * pool_size));
-		}
-	  }
-	  //Y[yoffset] = acc;
-	}
 }
 
 // static void fully_forward(const float *X, const int xdims[2], float *W,
@@ -312,24 +453,48 @@ __global__ void average_pool_kernel(const float *X, const int xdims[4],
 //   }
 // }
 
-__global__ void fully_forward_kernel (const float *X, const int xdims[2], float *W,
-                          const int wdims[2], float *Y, const int ydims[2]) {
+__global__ void fully_forward_kernel (const float *X, const int x0, const int x1, 
+                                      const float *W, const int w0, const int w1,
+                                      float *Y, const int y0, const int y1) {
     int i, j;
-    i = blockIdx.y * blockDim.y + threadIdx.y; // y index of output
-    j = blockIdx.x * blockDim.x + threadIdx.x; // x index of output
+    i = blockIdx.y * blockDim.y + threadIdx.y; // y index of output = row
+    j = blockIdx.x * blockDim.x + threadIdx.x; // x index of output = col
 
-    if(i < ydims[0] && j < ydims[1]){
-      float sum = 0;
-      for (const auto k : range(0, xdims[1])) {
-        sum += X[i * xdims[1] + k] * W[k * wdims[1] + j];
-      }
-      Y[i * wdims[1] + j] = sum;
+    float sum = 0;
+    __shared__ float Xs[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ float Ws[BLOCK_SIZE][BLOCK_SIZE];
+
+     for (const auto k : range(0, (x1-1)/BLOCK_SIZE + 1)) { //num X columns = num W rows
+      if (k * BLOCK_SIZE + threadIdx.x < x1 && i < x0)
+        Xs[threadIdx.y][threadIdx.x] = X[i * x1 + (k * BLOCK_SIZE + threadIdx.x)];
+      else
+        Xs[threadIdx.y][threadIdx.x] = 0.0;
+
+      if (k * BLOCK_SIZE + threadIdx.y < w0 && j < w1)
+        Ws[threadIdx.y][threadIdx.x] = W[(k * BLOCK_SIZE + threadIdx.y)*w1 + j];
+      else
+        Ws[threadIdx.y][threadIdx.x] = 0.0;
+
+      __syncthreads();
+      for (int p = 0; p < BLOCK_SIZE; ++p)
+        sum += Xs[threadIdx.y][p] * Ws[p][threadIdx.x];
+      __syncthreads();
     }
+
+    if(i < y0 && j < y1)
+      Y[i * y1 + j] = sum;
+
+    // if(i < ydims[0] && j < ydims[1]){
+    //   float sum = 0;
+    //   for (const auto k : range(0, xdims[1])) {
+    //     sum += X[i * xdims[1] + k] * W[k * wdims[1] + j];
+    //   }
+    //   Y[i * wdims[1] + j] = sum;
+    // }
 }
 
 // Choose the guess with largest score
 static void argmax(const float *X, const int xdims[2], int *Y) {
-  
   for (const auto i : range(0, xdims[0])) {
     auto max_idx = 0;
     auto max     = X[i * xdims[1]];
@@ -344,419 +509,382 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
   }
 }
 
-// __global__ void argmax_kernel(const float *input, const int fdims[2], int *output) {
+__global__ void argmax_kernel(const float *X, const int xdims[2], float *YVal, int *Y) {
 
-//   /************ parallelizing outer loop ************/
-//   int i= threadIdx.x;
-//   auto max_idx = 0;
-//   auto max     = input[i * fdims[1]];
-//   for (const auto j : range(0, fdims[1])) {
-//     const auto elem = input[(i * fdims[1]) + j];
-//     if (elem > max) {
-//       max_idx = j;
-//       max     = elem;
-//     }
-//   }
-//   output[blockIdx.x*1024+i] = max_idx;
+  // /************ parallelizing outer loop ************/
+  // int i= threadIdx.x;
+  // auto max_idx = 0;
+  // auto max     = input[i * fdims[1]];
+  // for (const auto j : range(0, fdims[1])) {
+  //   const auto elem = input[(i * fdims[1]) + j];
+  //   if (elem > max) {
+  //     max_idx = j;
+  //     max     = elem;
+  //   }
+  // }
+  // output[blockIdx.x*1024+i] = max_idx;
 
-//   /************ parallelizing inner loop ************/
-//   // __shared__ int max_idx[16];
-//   // __shared__ float max[16];
+  /************ parallelizing inner loop ************/
+  // __shared__ int max_idx[16][32];
+  // __shared__ float max[16][32];
+  __shared__ int max_idx[32];
+  __shared__ float max[32];
 
-//   // int t_x = threadIdx.x;
-//   // int b_x = blockIdx.x;
-//   // int dim_x = blockDim.x;
-//   // int start_index = b_x*10;
+  int y = blockIdx.y;
+  int x = 2 * blockIdx.x * blockDim.x + threadIdx.x;
 
-//   // // initializing the shared memory
-//   // if(start_index+t_x < start_index+10){
-//   //   // output[1] = 1;
-//   //   max_idx[t_x] = t_x;
-//   //   max[t_x] = input[start_index+t_x];
-//   // }
-//   // else{
-//   //   if(t_x<16){
-//   //     // output[2] = 2;
-//   //   max_idx[t_x] = t_x;
-//   //   max[t_x] = 0;
-//   //   }
-    
-//   // } 
+  int tx = threadIdx.x;
+  // int ty = threadIdx.y;
+  //
+  // if(y < xdims[0] && x < xdims[1]) {
+  //   max_idx[ty][tx] = x;
+  //   max[ty][tx] = X[(y * xdims[1]) + x];
+  // }
+  // else {
+  //   max_idx[ty][tx] = 0;
+  //   max[ty][tx] = X[(y * xdims[1])]; //first of the row
+  // }
+  //
+  // if(y < xdims[0] && x + blockDim.x < xdims[1]) {
+  //   max_idx[ty][tx + blockDim.x] = x + blockDim.x;
+  //   max[ty][tx + blockDim.x] = X[(y * xdims[1]) + x + blockDim.x];
+  // }
+  // else {
+  //   max_idx[ty][tx + blockDim.x] = 0;
+  //   max[ty][tx + blockDim.x] = X[(y * xdims[1])]; //first of the row
+  // }
+  if(x < xdims[1]) {
+    max_idx[tx] = x;
+    max[tx] = X[(y * xdims[1]) + x];
+  }
+  else {
+    max_idx[tx] = 0;
+    max[tx] = X[(y * xdims[1])]; //first of the row
+  }
 
-//   // comparison
-//   // for(int idx =; idx >= 1; idx/=2){
-//   //   __syncthreads();
-//   //   if(t_x < idx){
-//   //     if(max[t_x] < max[t_x+idx]){
-//   //       max_idx[t_x] = max_idx[t_x+idx];
-//   //       max[t_x] = max[t_x+idx];
-//   //     }
-//   //   }
-//   //   output[b_x] = max_idx[0];
-//   // }
+  if(x + blockDim.x < xdims[1]) {
+    max_idx[tx + blockDim.x] = x + blockDim.x;
+    max[tx + blockDim.x] = X[(y * xdims[1]) + x + blockDim.x];
+  }
+  else {
+    max_idx[tx + blockDim.x] = 0;
+    max[tx + blockDim.x] = X[(y * xdims[1])]; //first of the row
+  }
 
-// }
+  // for(int stride = blockDim.x; stride >= 1; stride >>= 1){
+  //   __syncthreads();
+  //   if(tx < stride){
+  //     if(max[ty][tx] < max[ty][tx + stride]){
+  //       max_idx[ty][tx] = max_idx[ty][tx + stride];
+  //       max[ty][tx] = max[ty][tx + stride];
+  //     }
+  //   }
+  // }
+  for(int stride = blockDim.x; stride >= 1; stride >>= 1){
+    __syncthreads();
+    if(tx < stride){
+      if(max[tx] < max[tx + stride]){
+        max_idx[tx] = max_idx[tx + stride];
+        max[tx] = max[tx + stride];
+      }
+    }
+  }
 
-// Forward operation for the CNN, a combination of conv layer + average pooling
-// + relu
+  //__syncthreads();
+  if(y < xdims[0] && YVal[y] < max[0]) {
+      Y[y] = max_idx[0];
+  }
+}
+
+// Forward operation for the CNN, a combination of conv layer + average pooling + relu
 void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                        float *fc2, int *out) {
-  // conv layer
-  const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
-                       (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
-  int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
-
+  /* Host */ 
+  // data dimensions and size
   const int pool_size = 2;
-  const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3]};
-  int device_b_size = bdims[0]*bdims[1]*bdims[2]*bdims[3];
+  int H_out_1 = xdims[1]-conv1dims[0]+1;
+  int W_out_1 = xdims[2]-conv1dims[0]+1;
 
-  const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
-                       (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
-  int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
-
-  auto a = zeros<float>(adims);
-
-  float *device_x;
   int device_x_size = xdims[0] * xdims[1] * xdims[2] * xdims[3];
-
-  cudaMalloc((void **)&device_x, sizeof(float)*device_b_size);
-  cudaMemcpy(device_x, x, sizeof(float)*device_x_size, cudaMemcpyHostToDevice);
-
-  int *device_xdims;
-  cudaMalloc((void **)&device_xdims, sizeof(int)*4);
-  cudaMemcpy(device_xdims, xdims, sizeof(int)*4, cudaMemcpyHostToDevice);
-
-  float *device_conv1;
   int device_conv1_size = conv1dims[0] * conv1dims[1] * conv1dims[2] * conv1dims[3];
   int device_conv2_size = conv2dims[0] * conv2dims[1] * conv2dims[2] * conv2dims[3];
-  cudaMalloc((void **)&device_conv1, sizeof(float)*fc1dims[0] * fc1dims[1]);
-  cudaMemcpy(device_conv1, conv1, sizeof(float)*device_conv1_size, cudaMemcpyHostToDevice);
+  int device_fc1_size = fc1dims[0] * fc1dims[1];
+  int device_fc2_size = fc2dims[0] * fc2dims[1];
 
-  int *device_conv1dims;
-  cudaMalloc((void **)&device_conv1dims, sizeof(int)*4);
-  cudaMemcpy(device_conv1dims, conv1dims, sizeof(int)*4, cudaMemcpyHostToDevice);
 
-  float *device_a;
-  int *device_adims;
+  // to do
+  const int adims_x[] = {conv1dims[0]*conv1dims[1]*conv1dims[2], H_out_1*W_out_1};
+  int device_ax_size = H_out_1*W_out_1*conv1dims[0]*conv1dims[1]*conv1dims[2];
+  
+  const int adims_w[] = {conv1dims[3], conv1dims[0]*conv1dims[1]*conv1dims[2]};
+  int device_aw_size = conv1dims[0]*conv1dims[1]*conv1dims[2]*conv1dims[3];
 
-  cudaMalloc((void **)&device_adims, sizeof(int)*4);
-  cudaMemcpy(device_adims, adims, sizeof(int)*4, cudaMemcpyHostToDevice);
+  const int adims_m[] = {conv1dims[3], H_out_1*W_out_1};
+  int device_am_size = xdims[1]*xdims[2]*conv1dims[2];
+  int device_am_total_size = H_out_1*W_out_1*conv1dims[3];
 
-  cudaMalloc((void **)&device_a, sizeof(float)* device_a_size);
-  cudaMemcpy(device_a, a, sizeof(float)*device_a_size, cudaMemcpyHostToDevice);
-
-  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
-
-  // shared convolution
-  int W_grid = (adims[1]-1)/TILE_WIDTH+1;
-  int H_grid = (adims[2]-1)/TILE_WIDTH+1;
-
-  size_t shmem_size = sizeof(float) * ( (TILE_WIDTH +conv1dims[0] -1)*(TILE_WIDTH +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
-  dim3 DimBlock0(TILE_WIDTH, TILE_WIDTH, 1);
-  dim3 DimGrid0(adims[0], adims[3], W_grid * H_grid);
-  const auto start = now();
-  conv_forward_valid_shared_kernel<<<DimGrid0, DimBlock0, shmem_size>>>(device_x, device_xdims, device_conv1, device_conv1dims, device_a, device_adims);
-  const auto end = now();
-
-  cudaDeviceSynchronize();
-
-  // normal convolution kernel
-  // dim3 DimGrid0(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
-  // dim3 DimBlock0(256, 1, 1);
-  // const auto start = now();
-  // conv_forward_valid_kernel<<<DimGrid0, DimBlock0>>>(device_x, device_xdims, device_conv1, device_conv1dims, device_a, device_adims);
-  // const auto end = now();
-
-  //cudaMemcpy(a, device_a, sizeof(float)*device_a_size, cudaMemcpyDeviceToHost);
-  const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();
-  std::cout << "Done with " << adims[0] << " queries in Conv1 "
-          << "elapsed = " << elapsed << " milliseconds." << "\n";
-
-  /// relu layer
-  //relu4(a, adims);
-
-  // relu kernel start layer
-  /*
-  float *device_a;
-  int *device_adims;
+  const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
   int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
 
-  cudaMalloc((void **)&device_adims, sizeof(int)*4);
-  cudaMemcpy(device_adims, adims, sizeof(int)*4, cudaMemcpyHostToDevice);
-
-  cudaMalloc((void **)&device_a, sizeof(float)* device_a_size);
-  cudaMemcpy(device_a, a, sizeof(float)*device_a_size, cudaMemcpyHostToDevice);
-  */
-
-  dim3 DimGrid(ceil(device_a_size/256), 1, 1);
-  dim3 DimBlock(256, 1, 1);
-  relu4_kernel<<<DimGrid, DimBlock>>>(device_a, device_adims);
-
-  //cudaMemcpy(device_adims, adims, sizeof(int)*4, cudaMemcpyDeviceToHost);
-  //cudaMemcpy(a, device_a, sizeof(float)*device_a_size, cudaMemcpyDeviceToHost);
-  // relu kernel end layer
-
-  // average pooling
-  //const int pool_size = 2;
-  //const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3]};
-  auto b = zeros<float>(bdims);
-  // average_pool(a, adims, pool_size, b, bdims);
-
-  //std::cout << "Device a and c sizes: " << device_a_size << " " << device_c_size << std::endl;
-
-  cudaMemcpy(device_xdims, bdims, sizeof(int)*4, cudaMemcpyHostToDevice);
-
-  cudaMemcpy(device_x, b, sizeof(float)*device_b_size, cudaMemcpyHostToDevice);
-
-  int tile_size = 16;
-  int w_grid = ceil(bdims[2]/tile_size);
-  int h_grid = ceil(bdims[1]/tile_size);
-
-  dim3 DimGrid1(bdims[0], bdims[3], ceil(bdims[1]*bdims[2]/256.0));
-  dim3 DimBlock1(256, 1, 1);
-
-  const auto start2 = now();
-  average_pool_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_adims, pool_size, device_x, device_xdims, w_grid);
-  const auto end2 = now();
-  const auto elapsed2 = std::chrono::duration<double, std::milli>(end2 - start2).count();
-  std::cout << "Done with " << adims[0] << " queries in pool1 "
-          << "elapsed = " << elapsed2 << " milliseconds." << "\n";
-  //cudaMemcpy(b, device_x, sizeof(float)*device_b_size, cudaMemcpyDeviceToHost);
-
-  /*
-  // average pooling kernel start
-  float *device_b;
-  int *device_bdims;
+  const int bdims[] = {adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3]};
   int device_b_size = bdims[0]*bdims[1]*bdims[2]*bdims[3];
 
-  cudaMalloc((void **)&device_bdims, sizeof(int)*4);
-  cudaMemcpy(device_bdims, bdims, sizeof(int)*4, cudaMemcpyHostToDevice);
+  const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1), (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
+  int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
 
-  cudaMalloc((void **)&device_b, sizeof(float)* device_b_size);
-  cudaMemcpy(device_b, b, sizeof(float)*device_b_size, cudaMemcpyHostToDevice);
-
-  int tile_size = 16;
-  int w_grid = ceil(bdims[2]/tile_size);
-  int h_grid = ceil(bdims[1]/tile_size);
-  //dim3 DimGrid1(bdims[0], bdims[3], w_grid*h_grid);
-  dim3 DimGrid1(bdims[0], bdims[3], ceil(bdims[1]*bdims[2]/256.0));
-  //dim3 DimBlock1(tile_size, tile_size, 1);
-  dim3 DimBlock1(256, 1, 1);
-  average_pool_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_adims, pool_size, device_b, device_bdims, w_grid);
-
-  cudaMemcpy(device_bdims, bdims, sizeof(int)*4, cudaMemcpyDeviceToHost);
-  cudaMemcpy(b, device_b, sizeof(float)*device_b_size, cudaMemcpyDeviceToHost);
-  // average pooling kernel end
-  */
-
-
-  // conv layer
-
-  //const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
-   //                    (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
-  //int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
-  auto c = zeros<float>(cdims);
-  //conv_forward_valid(b, bdims, conv2, conv2dims, c, cdims);
-
-  // kernel conv start
-  // device_x holds device_b, device_conv1 holds device_conv2, device_a holds c
-
-  cudaMemcpy(device_conv1, conv2, sizeof(float)*device_conv2_size, cudaMemcpyHostToDevice);
-
-  cudaMemcpy(device_conv1dims, conv2dims, sizeof(int)*4, cudaMemcpyHostToDevice);
-
-  cudaMemcpy(device_adims, cdims, sizeof(int)*4, cudaMemcpyHostToDevice);
-
-  cudaMemcpy(device_a, c, sizeof(float)*device_c_size, cudaMemcpyHostToDevice);
-
-  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
-  dim3 DimGrid2(cdims[0], cdims[3], ceil(cdims[1]*cdims[2]/256.0));
-  dim3 DimBlock2(256, 1, 1);
-
-  const auto start3 = now();
-  conv_forward_valid_kernel<<<DimGrid2, DimBlock2>>>(device_x, device_xdims, device_conv1, device_conv1dims, device_a, device_adims);
-  const auto end3 = now();
-  //cudaMemcpy(c, device_a, sizeof(float)*device_c_size, cudaMemcpyDeviceToHost);
-  const auto elapsed3 = std::chrono::duration<double, std::milli>(end3 - start3).count();
-  std::cout << "Done with " << bdims[0] << " queries in Conv2 "
-            << "elapsed = " << elapsed3 << " milliseconds." << "\n";
-  // kernel conv end
-
-  // relu
-  //relu4(c, cdims);
-
-  // relu kernel start
-  dim3 DimGrid3(ceil(device_a_size/256), 1, 1);
-  dim3 DimBlock3(256, 1, 1);
-  relu4_kernel<<<DimGrid3, DimBlock3>>>(device_a, device_adims);
-  //cudaMemcpy(c, device_a, sizeof(float)*device_c_size, cudaMemcpyDeviceToHost);
-  // relu kernel end
-
-  // average pooling
-  const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size,
-                       cdims[3]};
+  const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size, cdims[3]};
   int device_d_size = ddims[0]*ddims[1]*ddims[2]*ddims[3];
-  auto d = zeros<float>(ddims);
-  //average_pool(c, cdims, pool_size, d, ddims);
 
-  //pooling kernel start
-  cudaMemcpy(device_xdims, ddims, sizeof(int)*4, cudaMemcpyHostToDevice);
+  const int ddims2[] = {ddims[0], ddims[1] * ddims[2] * ddims[3]}; // reshape for matrix mult section
 
-  cudaMemcpy(device_x, d, sizeof(float)*device_d_size, cudaMemcpyHostToDevice);
-
-  w_grid = ceil(ddims[2]/tile_size);
-  h_grid = ceil(ddims[1]/tile_size);
-
-  dim3 DimGrid4(ddims[0], ddims[3], ceil(ddims[1]*ddims[2]/256.0));
-  dim3 DimBlock4(256, 1, 1);
-  average_pool_kernel<<<DimGrid4, DimBlock4>>>(device_a, device_adims, pool_size, device_x, device_xdims, w_grid);
-
-  cudaMemcpy(d, device_x, sizeof(float)*device_d_size, cudaMemcpyDeviceToHost);
-  //pooling kernel end
-
-  // reshape
-  const int ddims2[] = {ddims[0], ddims[1] * ddims[2] * ddims[3]};
-
-  // matrix multiplication
   const int edims[] = {ddims[0], fc1dims[1]};
-  auto e            = zeros<float>(edims);
+  int device_e_size = edims[0]*edims[1];
 
-  // float* deviceD;
-  // int* deviceDdims2;
-  float* deviceFc1;
-  int* deviceFc1dims;
-  // float* deviceE;
-  // int* deviceEdims;
-
-  int d2Size = ddims2[0] * ddims2[1];
-  int fc1Size = fc1dims[0] * fc1dims[1];
-  int eSize = edims[0] * edims[1];
-
-  cudaMalloc((void**) &deviceFc1, fc1Size * sizeof(float));
-  cudaMalloc((void**) &deviceFc1dims, 2 * sizeof(int));
-
-  cudaMemcpy(device_x, d, d2Size * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(device_xdims, ddims2, 2 * sizeof(int), cudaMemcpyHostToDevice);
-
-  cudaMemcpy(device_conv1, fc1, fc1Size * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(device_conv1dims, fc1dims, 2 * sizeof(int), cudaMemcpyHostToDevice);
-
-  cudaMemcpy(device_adims, edims, 2 * sizeof(int), cudaMemcpyHostToDevice);
-
-  dim3 DimGridE(ceil(edims[1]/16.0), ceil(edims[0]/16.0), 1);
-  dim3 DimBlockE(16, 16, 1);
-  // fully_forward(d, ddims2, fc1, fc1dims, e, edims);
-  // get start time
-  const auto startfc1 = now();
-  fully_forward_kernel<<<DimGridE, DimBlockE>>>(device_x, device_xdims, device_conv1, device_conv1dims, device_a, device_adims);
-  const auto endfc1 = now();
-  const auto elapsedfc1 = std::chrono::duration<double, std::milli>(endfc1 - startfc1).count();
-  std::cout << "Done with " << edims[0] << " queries in fully_forward "
-           << "elapsed = " << elapsedfc1 << " milliseconds." << "\n";
-
-  dim3 DimGridRelu2(ceil(eSize/256.0), 1, 1);
-  dim3 DimBlockRelu2(256, 1, 1);
-  const auto startrelu2 = now();
-  relu2_kernel<<<DimGridRelu2, DimBlockRelu2>>>(device_a, device_adims);
-  const auto endrelu2 = now();
-  const auto elapsedrelu2 = std::chrono::duration<double, std::milli>(endrelu2 - startrelu2).count();
-  std::cout << "Done with " << edims[0] << " queries in relu2 "
-           << "elapsed = " << elapsedrelu2 << " milliseconds." << "\n";
-
-  // matrix multiplication
   const int fdims[] = {edims[0], fc2dims[1]};
-  auto f            = zeros<float>(fdims);
+  int device_f_size = fdims[0]*fdims[1];
 
-  // float* deviceFc2;
-  // int* deviceFc2dims;
-  // float* deviceF;
-  // int* deviceFdims;
+  // allocating host memory
+  auto a = zeros<float>(adims);
+  auto b = zeros<float>(bdims);
+  auto c = zeros<float>(cdims);
+  auto d = zeros<float>(ddims);
+  auto e = zeros<float>(edims);
+  auto f = zeros<float>(fdims);
 
-  int fc2size = fc2dims[0] * fc2dims[1];
-  int fsize = fdims[0] * fdims[1];
+  /* Device */
+  // device data
+  float* device_x;
+  float *device_a;
+  float *device_ax;
+  float *device_aw;
+  float *device_am;
+  float *device_b;
+  float *device_c;
+  float *device_d;
+  float *device_e;
+  float *device_f;
+  // int *device_out;
 
-  cudaMemcpy(device_conv1, fc2, fc2size * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(device_conv1dims, fc2dims, 2 * sizeof(int), cudaMemcpyHostToDevice);
+  // device models
+  float *device_conv1;
+  float *device_conv2;
+  float *device_fc1;
+  float *device_fc2;
 
-  cudaMemcpy(device_xdims, fdims, 2 * sizeof(int), cudaMemcpyHostToDevice);
+  // device malloc
+  cudaMalloc((void **) &device_ax, device_ax_size * sizeof(float));
+  cudaMalloc((void **) &device_aw, device_aw_size * sizeof(float));
+  cudaMalloc((void **) &device_am, device_am_total_size * sizeof(float));
+  cudaMalloc((void **) &device_x, device_x_size * sizeof(float));
+  cudaMalloc((void **) &device_a, device_am_total_size * sizeof(float));
+  cudaMalloc((void **) &device_b, device_b_size * sizeof(float));
+  cudaMalloc((void **) &device_c, device_c_size * sizeof(float));
+  cudaMalloc((void **) &device_d, device_d_size * sizeof(float));
+  cudaMalloc((void **) &device_e, device_e_size * sizeof(float));
+  cudaMalloc((void **) &device_f, device_f_size * sizeof(float));
+  // cudaMalloc((void **) &device_out, FLAGS_batch_size * sizeof(int));
 
-  const auto startfc2 = now();
-  //fully_forward(e, edims, fc2, fc2dims, f, fdims);
-  dim3 DimGridF(ceil(fdims[1]/16.0), ceil(fdims[0]/16.0), 1);
-  dim3 DimBlockF(16, 16, 1);
-  fully_forward_kernel<<<DimGridF, DimBlockF>>>(device_a, device_adims, device_conv1, device_conv1dims, device_x, device_xdims);
-  const auto endfc2 = now();
-  const auto elapsedfc2 = std::chrono::duration<double, std::milli>(endfc2 - startfc2).count();
-  std::cout << "Done with " << fdims[0] << " queries in fully_forward 2 "
-           << "elapsed = " << elapsedfc2 << " milliseconds." << "\n";
+  cudaMalloc((void **) &device_conv1, device_conv1_size * sizeof(float));
+  cudaMalloc((void **) &device_conv2, device_conv2_size * sizeof(float));
+  cudaMalloc((void **) &device_fc1, device_fc1_size * sizeof(float));
+  cudaMalloc((void **) &device_fc2, device_fc2_size * sizeof(float));
 
-  cudaMemcpy(f, device_x, fsize * sizeof(float), cudaMemcpyDeviceToHost);
+  // copy host to device
+  cudaMemcpy(device_x, x, device_x_size * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(device_conv1, conv1, device_conv1_size * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(device_conv2, conv2, device_conv2_size * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(device_fc1, fc1, device_fc1_size * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(device_fc2, fc2, device_fc2_size * sizeof(float), cudaMemcpyHostToDevice);
 
-  // // matrix multiplication
-  // const int edims[] = {ddims[0], fc1dims[1]};
-  // auto e            = zeros<float>(edims);
+  /* conv layer start */
+  /************* unrolled convolution kernel begin *************/
+  const auto start = now();
+  // unroll X
+  int num_threads = xdims[3]*H_out_1*W_out_1;
+  int num_blocks = ceil((float)num_threads/512.0);
+  dim3 DimGrid0X(num_blocks, 1, 1);
+  dim3 DimBlock0X(512, 1, 1);
+  conv_forward_valid_unrolled_X_kernel<<<DimGrid0X, DimBlock0X>>>(device_ax, xdims[0], xdims[1], xdims[2], xdims[3], 
+                                                    device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+                                                    device_ax, adims_x[0], adims_x[1], adims_x[2], adims_x[3]);
+  // unroll W
+  num_threads = conv1dims[2]*conv1dims[3];
+  num_blocks = ceil((float)num_threads / 32);
+  dim3 DimGrid0W(num_blocks, 1, 1);
+  dim3 DimBlock0W(32, 1, 1);
+  conv_forward_valid_unrolled_W_kernel<<<DimGrid0W, DimBlock0W>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+                                                    device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+                                                    device_aw, adims_w[0], adims_w[1], adims_w[2], adims_w[3]);
+  // matrix multiplication
+  dim3 DimGrid0M(ceil((float)(H_out_1 * W_out_1) / 16), ceil((float) conv1dims[3] / 16), 1);
+  dim3 DimBlock0M(16, 16, 1);
+  for(int i = 0; i < xdims[0]; i++){
+    cudaMemcpy(device_x, &x[i*device_am_size], device_am_size, cudaMemcpyHostToDevice);
+    fully_forward_kernel<<<DimGrid0M, DimBlock0M>>>(device_aw, adims_w[0], adims_w[1], device_ax, adims_x[0], adims_x[1], &device_a[i*device_am_total_size], adims_m[0], adims_m[1]); 
+  }
+
+  // unroll Y
+  // num_threads = H_out_1*W_out_1*wdims[3];
+  // dim3 DimGrid0Y();
+  // dim3 DimBlock0Y();
+
+  /************* unrolled convolution kernel end *************/
+
+  /************* tiled convolution kernel begin *************/
+  int W_grid = (adims[1]-1)/TILE_WIDTH_1+1;
+  int H_grid = (adims[2]-1)/TILE_WIDTH_1+1;
+
+  // size_t shmem_size = sizeof(float) * ( (TILE_WIDTH_1 +conv1dims[0] -1)*(TILE_WIDTH_1 +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
+  // dim3 DimBlock(TILE_WIDTH_1, TILE_WIDTH_1, 1);
+  // dim3 DimGrid(adims[0], adims[3], W_grid * H_grid);
+  // const auto start = now();
+  // conv_forward_valid_shared_kernel_1<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+  //                                                   device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+  //                                                   device_a, adims[0], adims[1], adims[2], adims[3]);
+  /************* tiled convolution kernel end *************/
+  
+  /************* normal convolution kernel begin *************/
+  // dim3 DimGrid(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
+  // dim3 DimBlock(256, 1, 1);
+  // const auto start = now();
+  // conv_forward_valid_kernel<<<DimGrid, DimBlock>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+  //                                                   device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+  //                                                   device_a, adims[0], adims[1], adims[2], adims[3]);
+  /************* normal convolution kernel end *************/
+  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
+
+  const auto end = now();
+  const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+  std::cout << "Done with Conv1 in elapsed = " << elapsed << " milliseconds." << "\n";
+  /* conv layer end*/
+
+  /* relu kernel start */
+  dim3 DimGrid1(ceil(device_a_size/256), 1, 1);
+  dim3 DimBlock1(256, 1, 1);
+  const auto start1 = now();
+  relu_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_a_size);
+  // relu4(a, adims);
+  const auto end1 = now();
+  const auto elapsed1 = std::chrono::duration<double, std::milli>(end1 - start1).count();
+  std::cout << "Done with relu4 elapsed = " << elapsed1 << " milliseconds." << "\n";
+  /* relu kernel end */
+
+  /* average pooling start */
+  dim3 DimGrid2(bdims[0], bdims[3], ceil(bdims[1]*bdims[2]/256.0));
+  dim3 DimBlock2(256, 1, 1);
+  const auto start2 = now();
+  average_pool_kernel<<<DimGrid2, DimBlock2>>>(device_a, adims[0], adims[1], adims[2], adims[3], pool_size, 
+                                                device_b, bdims[0], bdims[1], bdims[2], bdims[3]);
+  const auto end2 = now();
+  const auto elapsed2 = std::chrono::duration<double, std::milli>(end2 - start2).count();
+  std::cout << "Done with pool1 in elapsed = " << elapsed2 << " milliseconds." << "\n";
+  /* average pooling end */
+
+  /* conv layer start */
+  // dim3 DimGrid3(cdims[0], cdims[3], ceil(cdims[1]*cdims[2]/256.0));
+  // dim3 DimBlock3(256, 1, 1);
+  W_grid = (cdims[1]-1)/TILE_WIDTH_2+1;
+  H_grid = (cdims[2]-1)/TILE_WIDTH_2+1;
+
+  size_t shmem_size3 = sizeof(float) * ( (TILE_WIDTH_2 +conv2dims[0] -1)*(TILE_WIDTH_2 +conv2dims[1]-1) + conv2dims[0]*conv2dims[1] ); 
+  dim3 DimBlock3(TILE_WIDTH_2, TILE_WIDTH_2, 1);
+  dim3 DimGrid3(cdims[0], cdims[3], W_grid * H_grid);
+  const auto start3 = now();
+    conv_forward_valid_shared_kernel_2<<<DimGrid3, DimBlock3, shmem_size3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
+                                                    device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
+                                                    device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
+  // conv_forward_valid_kernel<<<DimGrid3, DimBlock3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
+  //                                                   device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
+  //                                                   device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
+  const auto end3 = now();
+  const auto elapsed3 = std::chrono::duration<double, std::milli>(end3 - start3).count();
+  std::cout << "Done with Conv2 in elapsed = " << elapsed3 << " milliseconds." << "\n";
+  /* conv layer end*/
+
+  /* relu later start */
+  dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
+  dim3 DimBlock4(256, 1, 1);
+  const auto start4 = now();
+  relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
+  // relu4(c, cdims);
+  const auto end4 = now();
+  const auto elapsed4 = std::chrono::duration<double, std::milli>(end4 - start4).count();
+  std::cout << "Done with relu4 in elapsed = " << elapsed4 << " milliseconds." << "\n";
+  /* relu layer end*/
+
+  /* average pooling start*/
+  dim3 DimGrid5(ddims[0], ddims[3], ceil(ddims[1]*ddims[2]/256.0));
+  dim3 DimBlock5(256, 1, 1);
+  const auto start5 = now();
+  average_pool_kernel<<<DimGrid5, DimBlock5>>>(device_c, cdims[0], cdims[1], cdims[2], cdims[3], pool_size, 
+                                                device_d, ddims[0], ddims[1], ddims[2], ddims[3]);//, w_grid);
+  //average_pool(c, cdims, pool_size, d, ddims);
+  const auto end5 = now();
+  const auto elapsed5 = std::chrono::duration<double, std::milli>(end5 - start5).count();
+  std::cout << "Done with pool2 in elapsed = " << elapsed4 << " milliseconds." << "\n";
+  /* average pooling end*/
+
+  /* fully forward start */
+  dim3 DimGridE((edims[1]-1)/BLOCK_SIZE + 1, (edims[0]-1)/BLOCK_SIZE + 1, 1);
+  dim3 DimBlockE(BLOCK_SIZE, BLOCK_SIZE, 1);
+  const auto start6 = now();
+  fully_forward_kernel<<<DimGridE, DimBlockE>>>(device_d, ddims2[0], ddims2[1], device_fc1, fc1dims[0], fc1dims[1], device_e, edims[0], edims[1]); 
   // fully_forward(d, ddims2, fc1, fc1dims, e, edims);
-  //
-  // // relu
+  const auto end6 = now();
+  const auto elapsed6 = std::chrono::duration<double, std::milli>(end6 - start6).count();
+  std::cout << "Done with fully_forward1 in elapsed = " << elapsed6 << " milliseconds." << "\n";
+  /* fully forward end */
+
+  /* relu2 start */
+  dim3 DimGridRelu2(ceil(device_e_size/256.0), 1, 1);
+  dim3 DimBlockRelu2(256, 1, 1);
+  const auto start7 = now();
+  relu_kernel<<<DimGridRelu2, DimBlockRelu2>>>(device_e, device_e_size);
   // relu2(e, edims);
-  //
-  // // matrix multiplication
-  // const int fdims[] = {edims[0], fc2dims[1]};
-  // auto f            = zeros<float>(fdims);
-  // fully_forward(e, edims, fc2, fc2dims, f, fdims);
+  const auto end7 = now();
+  const auto elapsed7 = std::chrono::duration<double, std::milli>(end7 - start7).count();
+  std::cout << "Done with relu2 in elapsed = " << elapsed7 << " milliseconds." << "\n";
+  /* relu2 end */
 
-  // device_x_size = xdims[0]*xdims[1]*xdims[2]*xdims[3];
-  // device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
-  // device_b_size = bdims[0]*bdims[1]*bdims[2]*bdims[3];
-  // device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
-  // device_d_size = ddims[0]*ddims[1]*ddims[2]*ddims[3];
-  // int device_d2_size = ddims2[0]*ddims2[1];
-  // int device_e_size = edims[0]*edims[1];
-  // int device_f_size = fdims[0]*fdims[1];
+  /* fully forward start */
+  dim3 DimGridF((fdims[1] - 1)/BLOCK_SIZE + 1, (fdims[0] - 1)/BLOCK_SIZE + 1, 1);
+  dim3 DimBlockF(BLOCK_SIZE, BLOCK_SIZE, 1);
+  const auto start8 = now();
+  fully_forward_kernel<<<DimGridF, DimBlockF>>>(device_e, edims[0], edims[1], device_fc2, fc2dims[0], fc2dims[1], device_f, fdims[0], fdims[1]);
+  //fully_forward(e, edims, fc2, fc2dims, f, fdims);
+  const auto end8 = now();
+  const auto elapsed8 = std::chrono::duration<double, std::milli>(end8 - start8).count();
+  std::cout << "Done with fully_forward 2 in elapsed = " << elapsed8 << " milliseconds." << "\n";
+  /* fully forward end */
 
-  // std::cout << "more devices: " << device_x_size << " " << device_a_size << " " << device_b_size << " " << device_c_size << " " << device_d_size << " " << device_d2_size << " " << device_e_size << " " << device_f_size << std::endl;
+  // copy back to host 
+  cudaMemcpy(f, device_f, device_f_size * sizeof(float), cudaMemcpyDeviceToHost);
 
-  // float* deviceF;
-  // int* deviceOUT;
-  // int* deviceFDIMS;
-
-  // int numInputElements = fdims[0]*fdims[1];  // number of elements in the input list
-  // int numOutputElements = fdims[0];          // number of elements in the output list
-
-  // cudaMalloc((void**)&deviceF,numInputElements*sizeof(float));
-  // cudaMalloc((void**)&deviceOUT,numOutputElements*sizeof(int));
-  // cudaMalloc((void**)&deviceFDIMS, 2*sizeof(int));
-
-  // cudaMemcpy(deviceF, f, numInputElements*sizeof(float),cudaMemcpyHostToDevice);
-  // cudaMemcpy(deviceFDIMS, fdims, 2*sizeof(int), cudaMemcpyHostToDevice);
-
-  // for parallelizing inner loop
-  // dim3 dimGrid(10, 1, 1);
-  // dim3 dimBlock(32, 1, 1);
-
-  // for paralleliziing outer loop
-  // dim3 dimGrid(ceil(fdims[0]/1024.0), 1, 1);
-  // dim3 dimBlock(1024, 1, 1);
-   
-  // argmax_kernel<<<dimGrid,dimBlock>>>(deviceF,deviceFDIMS,deviceOUT);
-
-  // cudaMemcpy(out, deviceOUT, numOutputElements * sizeof(int), cudaMemcpyDeviceToHost);
-
-  // cudaFree(deviceF);
-  // cudaFree(deviceOUT);
-  // cudaFree(deviceFDIMS);
-
+  /* argmax start */
+  const auto start9 = now();
   argmax(f, fdims, out);
+  // argmax_kernel<<<DimGridArg, DimBlockArg>>>(device_f, device_fdims, deviceOutVal, deviceOut);
+  const auto end9 = now();
+  const auto elapsed9 = std::chrono::duration<double, std::milli>(end9 - start9).count();
+  std::cout << "Done with argmax in " << "elapsed = " << elapsed << " milliseconds." << "\n";
+  /* argmax end */
 
+  // cudaMemcpy(out, deviceOut, fdims[0] * sizeof(int), cudaMemcpyDeviceToHost);
+
+  // free device memory
   cudaFree(device_x);
-  cudaFree(device_xdims);
   cudaFree(device_a);
-  cudaFree(device_adims);
+  cudaFree(device_b);
+  cudaFree(device_c);
+  cudaFree(device_d);
+  cudaFree(device_e);
+  cudaFree(device_f);
   cudaFree(device_conv1);
-  cudaFree(device_conv1dims);
-  cudaFree(deviceFc1);
-  cudaFree(deviceFc1dims);
+  cudaFree(device_conv2);
+  cudaFree(device_fc1);
+  cudaFree(device_fc2);
 
+  // free host memory
   delete[] a;
   delete[] b;
   delete[] c;
@@ -766,44 +894,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 }
 
 int main(int argc, char **argv) {
-  int deviceCount;
-  //wbArg_read(argc, argv);
-  cudaGetDeviceCount(&deviceCount);
-
-  //wbTime_start(GPU, "Getting GPU Data."); //@@ start a timer
-  for (int dev = 0; dev < deviceCount; dev++) {
-    //std::cout << "Device Count: " << dev;
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, dev);
-    std::cout << "Device " << dev << " name: " << deviceProp.name << "\n";
-    if (dev == 0) {
-      if (deviceProp.major == 9999 && deviceProp.minor == 9999) {
-        std::cout << "No CUDA GPU has been detected \n";
-        return -1;
-      } else if (deviceCount == 1) {
-        //@@ WbLog is a provided logging API (similar to Log4J).
-        //@@ The logging function wbLog takes a level which is either
-        //@@ OFF, FATAL, ERROR, WARN, INFO, DEBUG, or TRACE and a
-        //@@ message to be printed.
-        std::cout << "There is 1 device supporting CUDA" << "\n";
-      } else {
-        std::cout << "There are " << deviceCount << " devices supporting CUDA" << "\n";
-      }
-    }
-
-    std::cout << "Device " << dev << " name: " << deviceProp.name << "\n";
-    std::cout << " Computational Capabilities: " << deviceProp.major << "." << deviceProp.minor << "\n";
-    std::cout << " Maximum global memory size: " << deviceProp.totalGlobalMem << "\n";
-    std::cout << " Maximum constant memory size: " << deviceProp.totalConstMem << "\n";
-    std::cout << " Maximum shared memory size per block: " << deviceProp.sharedMemPerBlock << "\n";
-    std::cout << " Maximum block dimensions: " << deviceProp.maxThreadsDim[0] << " x " << deviceProp.maxThreadsDim[1]
-        << " x " << deviceProp.maxThreadsDim[2] << "\n";
-    std::cout << " Maximum grid dimensions: " << deviceProp.maxGridSize[0] <<
-          " x " << deviceProp.maxGridSize[1] << " x " << deviceProp.maxGridSize[2] << "\n";
-    std::cout << " Warp size: " << deviceProp.warpSize << "\n";
-  }
-
-  //wbTime_stop(GPU, "Getting GPU Data."); //@@ stop the timer
 
   if (argc != 3 && argc != 4) {
     std::cerr << "\n"
@@ -858,8 +948,7 @@ int main(int argc, char **argv) {
   const auto end = now();
 
   // get elapsed time in milliseconds
-  const auto elapsed =
-      std::chrono::duration<double, std::milli>(end - start).count();
+  const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();
 
   // Get reference
   int *ref = zeros<int>(FLAGS_batch_size);

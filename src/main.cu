@@ -167,8 +167,9 @@ __global__ void unroll_mult(float *w_in, float *x_in, float *y_out, int i){
 
 // y_in is the unrolled form
 // y_out is the rerolled form
-void reroll_y(float *y_in, float *y_out, int y0, int y1, int y2, int y3){
-	for(int batch=0; batch<y0; batch++){
+__global__ void reroll_y(float *y_in, float *y_out, int y0, int y1, int y2, int y3){
+	int batch = blockIdx.x;
+	//for(int batch=0; batch<y0; batch++){
 		for(int col=0; col<y2; col++){
 			for(int row = 0; row<y1; row++){
 				for(int img = 0; img<y3; img++){
@@ -177,7 +178,7 @@ void reroll_y(float *y_in, float *y_out, int y0, int y1, int y2, int y3){
 				}
 			}
 		}
-	}
+	//}
 }
 
 // From book chapter Figure 16.4
@@ -336,12 +337,18 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   auto s_x = zeros<float>(10*25*24*24);
   cudaMemcpy(s_x, d_unroll_x, xdims[0]*25*24*24 * sizeof(float), cudaMemcpyDeviceToHost);
   auto s_y = zeros<float>(10*32*24*24);
-  cudaMemcpy(s_y, device_a, adims[0]*adims[1]*adims[2]*adims[3] * sizeof(float), cudaMemcpyDeviceToHost);
+
+  dim3 DimBlock2(1, 1, 1);
+  dim3 DimGrid2(xdims[0], 1, 1);
+  float *device_a_out;
+  cudaMalloc((void **)&device_a_out, adims[0]*adims[1]*adims[2]*adims[3]*sizeof(float));
+  reroll_y<<<DimGrid2, DimBlock2>>>(device_a, device_a_out, adims[0], adims[1], adims[2], adims[3]);
+  cudaMemcpy(a, device_a_out, adims[0]*adims[1]*adims[2]*adims[3] * sizeof(float), cudaMemcpyDeviceToHost);
 
   //unroll_w(conv1, s_w, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3]);
   //unroll_x(x, s_x, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3]);
   //unroll_mult(s_w, s_x, s_y);
-  reroll_y(s_y, a, adims[0], adims[1], adims[2], adims[3]);
+  //reroll_y(s_y, a, adims[0], adims[1], adims[2], adims[3]);
 
   delete[] s_w;
   delete[] s_x;

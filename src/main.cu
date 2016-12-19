@@ -597,6 +597,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaFree(d_unroll_x);
   cudaFree(device_a_in);
 
+  cudaDeviceSynchronize();
 
 
 

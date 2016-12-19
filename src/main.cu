@@ -385,6 +385,7 @@ __global__ void average_pool_kernel(const float *X, const int x0, const int x1, 
 	}
 }
 
+// This is the original serial fully_forward function
 // static void fully_forward(const float *X, const int xdims[2], float *W,
 //                           const int wdims[2], float *Y, const int ydims[2]) {
 //   for (const auto i : range(0, xdims[0])) {
@@ -398,6 +399,13 @@ __global__ void average_pool_kernel(const float *X, const int x0, const int x1, 
 //   }
 // }
 
+
+// This is the parallelized fully_forward kernel
+// This uses shared memory and tiling to boost its performance
+// Function inputs: Input image X, with dimensions given by x0 and x1
+//					Input matrix W with dimensions w0 and w1
+//					Output image Y, and its dimensions y0 and y1
+// Function output: The product is stored in Y
 __global__ void fully_forward_kernel(const float *X, const int x0, const int x1, 
                                       const float *W, const int w0, const int w1,
                                       float *Y, const int y0, const int y1) {
@@ -429,7 +437,7 @@ __global__ void fully_forward_kernel(const float *X, const int x0, const int x1,
     if(i < y0 && j < y1)
       Y[i * y1 + j] = sum;
 
-    // basic matrix mult
+	// This was the kernel body for basic parallelized matrix multiplication
     // if(i < ydims[0] && j < ydims[1]){
     //   float sum = 0;
     //   for (const auto k : range(0, xdims[1])) {
@@ -439,6 +447,7 @@ __global__ void fully_forward_kernel(const float *X, const int x0, const int x1,
     // }
 }
 
+// This was the original serial code for argmax
 // Choose the guess with largest score
 static void argmax(const float *X, const int xdims[2], int *Y) {
   for (const auto i : range(0, xdims[0])) {
@@ -455,6 +464,13 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
   }
 }
 
+// This is the parallel version of argmax
+// We notice that argmax is divided into two functions
+// This function chooses the guess with the largest score amongst the 
+// first half of the indices (represented by the check x0/2)
+// Function inputs: Input image X with dimensions x0 and x1
+//					Output matrix Y
+// Function output: Y, which is an array that contains the indices of the max values
 __global__ void argmax_kernel1(const float *X, const int x0, const int x1, int *Y) {
   int i= blockIdx.x * blockDim.x + threadIdx.x;
   
@@ -471,6 +487,14 @@ __global__ void argmax_kernel1(const float *X, const int x0, const int x1, int *
     Y[i] = max_idx;
   }
 }
+
+// This is the parallel version of argmax
+// We notice that argmax is divided into two functions
+// This function chooses the guess with the largest score amongst the 
+// second half of the indices (represented by the check x0/2 and x0)
+// Function inputs: Input image X with dimensions x0 and x1
+//					Output matrix Y
+// Function output: Y, which is an array that contains the indices of the max values
 __global__ void argmax_kernel2(const float *X, const int x0, const int x1, int *Y) {
   int i= blockIdx.x * blockDim.x + threadIdx.x;
   

@@ -103,6 +103,7 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
   check_success(H5Fclose(file_id));
 }
 
+// This is the serial version of conv_forward_valid
 // // From book chapter Figure 16.4
 // static void conv_forward_valid(const float *X, const int xdims[4],
 //                                const float *W, const int wdims[4], float *Y,
@@ -135,6 +136,12 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
 //   }
 // }
 
+// This is the first parallel attempt for conv_forward_valid
+// This focused solely on converting from serial to parallel
+// Function inputs: Input image X with dimensions specified by x0 - x3
+//					Convolution weights W with dimensinos w0-w3
+//					Output image Y with dimensions y0 - y3
+// Function output: Stored in Y
 __global__ void conv_forward_valid_kernel(const float *X, const int x0, const int x1, const int x2, const int x3,
                                const float *W, const int w0, const int w1, const int w2, const int w3, 
                                float *Y, const int y0, const int y1, const int y2, const int y3) {
@@ -148,22 +155,29 @@ __global__ void conv_forward_valid_kernel(const float *X, const int x0, const in
 	int h = idx/y2;
 	int w = idx%y2;
 	if(h < y1 && w < y2){
+	// use acc to avoid repeatedly writing to global memory
     float acc = 0;
 		const auto yoffset = ((i * y1 + h) * y2 + w) * y3 + m;
 		for (const auto p : range(0, filter_h)) {
 			for (const auto q : range(0, filter_w)) {
 				for (const auto c : range(0, in_channel)) {
-  				const auto xoffset = i * x1 * x2 * x3 + (h + p) * x2 * x3 + (w + q) * x3 + c;
-  				const auto woffset = p * w1 * w2 * w3 + q * w2 * w3 + c * w3 + m;
-  				// Y[yoffset] += X[xoffset] * W[woffset];
-          acc += X[xoffset] * W[woffset];
+					const auto xoffset = i * x1 * x2 * x3 + (h + p) * x2 * x3 + (w + q) * x3 + c;
+					const auto woffset = p * w1 * w2 * w3 + q * w2 * w3 + c * w3 + m;
+					// Y[yoffset] += X[xoffset] * W[woffset];
+					acc += X[xoffset] * W[woffset];
 				}
 			}
 		}
-    Y[yoffset] = acc;
+		Y[yoffset] = acc;
 	}
 }
 
+// This is another parallel attempt for conv_forward_valid
+// Here we added shared memory to speed up performance
+// Function inputs: Input image X with dimensions specified by x0 - x3
+//					Convolution weights W with dimensinos w0-w3
+//					Output image Y with dimensions y0 - y3
+// Function output: Stored in Y
 __global__ void conv_forward_valid_shared_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, 
                                const float *W, const int w0, const int w1, const int w2, const int w3, 
                                float *Y, const int y0, const int y1, const int y2, const int y3) {
@@ -220,6 +234,14 @@ __global__ void conv_forward_valid_shared_kernel(const float *X, const int x0, c
   }
 }
 
+
+// This is another parallel attempt for conv_forward_valid
+// Here we implemented a version of unrolling which we supplemented
+// with shared memory
+// Function inputs: Input image X with dimensions specified by x0 - x3
+//					Convolution weights W with dimensinos w0-w3
+//					Output image Y with dimensions y0 - y3
+// Function output: Stored in Y
 __global__ void conv_forward_valid_unrolled_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, 
                                const float *W, const int w0, const int w1, const int w2, const int w3, 
                                float *Y, const int y0, const int y1, const int y2, const int y3) {
@@ -270,12 +292,16 @@ __global__ void conv_forward_valid_unrolled_kernel(const float *X, const int x0,
   }
 }
 
+// This is the relu kernel 
+// This function ensures all the values in the image are non negative
+// We combined relu2 and relu4 into one function
 __global__ void relu_kernel(float *X, int size){
 	int row = blockIdx.x*blockDim.x+threadIdx.x;
 	if(row < size)
 		X[row] = (X[row] < 0) ? 0 : X[row];
 }
 
+// This was the original serial relu4 function
 // // Recified linear unit 4d
 // static void relu4(float *X, const int xdims[4]) {
 //   for (const auto i : range(0, xdims[0] * xdims[1] * xdims[2] * xdims[3])) {
@@ -283,12 +309,14 @@ __global__ void relu_kernel(float *X, int size){
 //   }
 // }
 
+// This was the first attempt for parallelizing relu4
 // __global__ void relu4_kernel(float *X, const int xdims[4]){
 // 	int row = blockIdx.x*blockDim.x+threadIdx.x;
 // 	if(row < xdims[0] * xdims[1] * xdims[2] * xdims[3])
 // 		X[row] = (X[row] < 0) ? 0 : X[row];
 // }
 
+// This was the original serial relu2 function
 // // Recified linear unit 2d
 // static void relu2(float *X, const int xdims[2]) {
 //   for (const auto i : range(0, xdims[0] * xdims[1])) {
@@ -296,12 +324,14 @@ __global__ void relu_kernel(float *X, int size){
 //   }
 // }
 
+// This was the first attempt for parallelizing relu2
 // __global__ void relu2_kernel(float *X, const int xdims[2]){
 //  	int i = blockIdx.x*blockDim.x+threadIdx.x;
 //  	if(i < xdims[0] * xdims[1])
 //  		X[i] = (X[i] < 0) ? 0 : X[i];
 // }
 
+// This was the original serial average_pool function
 // // From book chapter Figure 16.5
 // static void average_pool(const float *X, const int xdims[4],
 //                          const int pool_size, float *Y, const int ydims[4]) {
@@ -325,6 +355,14 @@ __global__ void relu_kernel(float *X, int size){
 //   }
 // }
 
+
+// This is the parallelized average_pool kernel
+// This uses memory coalesced access when reading from global memory at X
+// This function takes the average of the pixels nearby (given by pool_size)
+// Function inputs: Input image X, and its dimensions given by x0 - x3
+//					pool_size which describes how many pixels to average
+//					Output image Y, and its dimensions y0 - y3
+// Function output: The results are stored in Y
 __global__ void average_pool_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, const int pool_size, 
                                     float *Y, const int y0, const int y1, const int y2, const int y3){
 	int i = blockIdx.x;

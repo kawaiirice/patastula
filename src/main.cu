@@ -549,7 +549,9 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // conv_forward_valid_kernel<<<DimGrid, DimBlock>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
   //                                                   device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
   //                                                   device_a, adims[0], adims[1], adims[2], adims[3]);
-  cudaMemset(device_a, 0, device_a_size);
+  auto a_zero = zeros<float>(adims);
+  //cudaMemset(device_a, 0, device_a_size);
+  cudaMemcpy(device_a, a_zero, device_a_size * sizeof(float), cudaMemcpyHostToDevice);
   dim3 DimBlock(16, 16, 1);
   dim3 DimGrid((adims[1] * adims[2] + 16-1)/16, (adims[3]+16-1)/16, adims[0]);
   size_t shmem_size = sizeof(float) * (16 * 16 * 2);
@@ -564,10 +566,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* conv layer end*/
 
   // /* relu kernel start */
-  // dim3 DimGrid1(ceil(device_a_size/256), 1, 1);
-  // dim3 DimBlock1(256, 1, 1);
+   dim3 DimGrid1(ceil(device_a_size/256), 1, 1);
+   dim3 DimBlock1(256, 1, 1);
   // const auto start1 = now();
-  // relu_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_a_size);
+   relu_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_a_size);
   // // relu4(a, adims);
   // const auto end1 = now();
   // const auto elapsed1 = std::chrono::duration<double, std::milli>(end1 - start1).count();
@@ -601,7 +603,9 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // conv_forward_valid_kernel<<<DimGrid3, DimBlock3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
   //                                                   device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
   //                                                   device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
-  cudaMemset(device_c, 0, device_c_size);
+  auto c_zero = zeros<float>(cdims);
+  cudaMemcpy(device_c, c_zero, device_c_size * sizeof(float), cudaMemcpyHostToDevice);
+  //cudaMemset(device_c, 0, device_c_size);
   dim3 DimBlock3(16, 16, 1);
   dim3 DimGrid3((cdims[1] * cdims[2] + 16-1)/16, (cdims[3]+16-1)/16, cdims[0]);
   shmem_size = sizeof(float) * (16 * 16 * 2);
@@ -614,10 +618,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* conv layer end*/
 
   // /* relu later start */
-  // dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
-  // dim3 DimBlock4(256, 1, 1);
+   dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
+   dim3 DimBlock4(256, 1, 1);
   // const auto start4 = now();
-  // relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
+   relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
   // // relu4(c, cdims);
   // const auto end4 = now();
   // const auto elapsed4 = std::chrono::duration<double, std::milli>(end4 - start4).count();

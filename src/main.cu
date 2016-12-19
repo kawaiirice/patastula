@@ -400,6 +400,105 @@ __global__ void argmax_kernel2(const float *X, const int x0, const int x1, int *
   }
 }
 
+
+__global__ void unroll_w_kernel(float *w_in, float *w_out, int w0, int w1, int w2, int w3){
+	int row = threadIdx.x + blockIdx.x*blockDim.x;
+	if(row < w3){
+	//for(int row=0; row<w3; row++){
+		for(int p=0; p < w0; p++){
+			for(int q=0; q<w1; q++){
+				for(int c=0; c<w2; c++){
+					int woffset = p * w1 * w2 * w3 + q * w2 * w3 + c*w3 + row;
+					int unroll = row*w2*w1*w0 + c*w1*w0 + p*w0 + q;
+					w_out[unroll] = w_in[woffset];
+				}
+			}
+		}
+	}
+}
+
+__global__ void unroll_x_kernel(float *x_in, float *x_out, int x0, int x1, int x2, int x3, int y1, int y2, int y3, int i){
+	int batch = blockIdx.x;
+	int col = threadIdx.x + i*96;
+	int h = col/24;
+	int w = col%24;
+	//for(int batch=0; batch<x0; batch++){
+		//for(int h=0; h<y1; h++){
+			//for(int w=0; w<y2; w++){
+				// we fill x_unroll column by column
+				for(int p=0; p<5; p++){
+					for(int q=0; q<5; q++){
+						for(int c=0; c<x3; c++){
+							int h_unroll = p*5+q;
+							int w_unroll = h*y2+w;
+							int unroll_offset = batch*25*y1*y2+h_unroll*y1*y2 + w_unroll;
+							int xoffset = batch*x1*x2 + (h+p)*x2 + (w+q);
+							x_out[unroll_offset] = x_in[xoffset];
+						}
+					}
+				}
+			//}
+		//}
+	//}
+}
+
+__global__ void unroll_mult_kernel(float *w_in, float *x_in, float *y_out, int i){
+	int batch = blockIdx.x;
+	int col = threadIdx.x + i*96;
+	if(col < 24*24){
+	//for(int batch=0; batch<10; batch++){
+		for(int row=0; row<32; row++){
+			//for(int col=0; col<24*24; col++){
+				float sum = 0;
+				for(int inner = 0; inner<25; inner++){
+					sum += w_in[row*25 + inner] * x_in[batch*25*24*24 + col + inner*24*24];
+				}
+				y_out[batch*32*24*24 + row*24*24 + col] = sum;
+			//}
+		}
+	//}
+	}
+}
+
+// y_in is the unrolled form
+// y_out is the rerolled form
+__global__ void reroll_y_kernel(float *y_in, float *y_out, int y0, int y1, int y2, int y3){
+	int batch = blockIdx.x;
+	//for(int batch=0; batch<y0; batch++){
+		for(int col=0; col<y2; col++){
+			for(int row = 0; row<y1; row++){
+				for(int img = 0; img<y3; img++){
+					int yoffset = batch*y1*y2*y3 + row*y2*y3 + col*y3 + img;
+					y_out[yoffset] = y_in[batch*y1*y2*y3 + row*y2 + col + img*y1*y2];
+				}
+			}
+		}
+	//}
+}
+
+void host_unroll(float *w_in, float *w_out, float *x_in, float *x_out, 
+				 float *y_in, float *y_out, const int *wdims, const int *ydims){
+
+  dim3 DimBlock(256, 1, 1);
+  dim3 DimGrid(ceil(32*25/256.0), 1, 1);
+
+  unroll_w_kernel<<<DimGrid, DimBlock>>>(w_in, w_out, wdims[0], wdims[1], wdims[2], wdims[3]);
+
+  dim3 DimBlock1(96, 1, 1);
+  dim3 DimGrid1(xdims[0], 1, 1);
+
+  //for(int i=0; 
+  for(int i=0; i<6; i++){
+	  unroll_x_kernel<<<DimGrid1, DimBlock1>>> (x_in, x_out, xdims[0], xdims[1], xdims[2], xdims[3], ydims[1], ydims[2], ydims[3], i);
+	  unroll_mult_kernel<<<DimGrid1, DimBlock1>>>(w_out, x_out, y_in, i);
+  }
+
+  dim3 DimBlock2(1, 1, 1);
+  dim3 DimGrid2(xdims[0], 1, 1);
+  reroll_y_kernel<<<DimGrid2, DimBlock2>>>(y_in, y_out, ydims[0], ydims[1], ydims[2], ydims[3]);
+}
+
+
 // Forward operation for the CNN, a combination of conv layer + average pooling + relu
 void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                        float *fc2, int *out,
@@ -477,9 +576,32 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   dim3 DimBlock(TILE_WIDTH, TILE_WIDTH, 1);
   dim3 DimGrid(adims[0], adims[3], W_grid * H_grid);
   const auto start = now();
-  conv_forward_valid_shared_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
-                                                    device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
-                                                    device_a, adims[0], adims[1], adims[2], adims[3]);
+  //conv_forward_valid_shared_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+                                                    //device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+                                                    //device_a, adims[0], adims[1], adims[2], adims[3]);
+
+
+  float *device_w;
+  cudaMalloc((void **)&device_w, 32*25*sizeof(float));
+
+  float *d_unroll_x;
+  cudaMalloc((void **)&d_unroll_x, xdims[0]*25*24*24*sizeof(float));
+
+  float *device_a_in;
+  cudaMalloc((void **)&device_a_in, adims[0]*adims[1]*adims[2]*adims[3]*sizeof(float));
+
+  host_unroll(device_conv1, device_w, device_x, d_unroll_x, device_a_in, device_a,
+				conv1dims, adims);
+
+  cudaFree(device_w);
+  cudaFree(d_unroll_x);
+  cudaFree(device_a_in);
+
+
+
+
+
+
   // dim3 DimGrid(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
   // dim3 DimBlock(256, 1, 1);
   // const auto start = now();

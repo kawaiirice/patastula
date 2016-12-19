@@ -220,6 +220,66 @@ __global__ void conv_forward_valid_shared_kernel(const float *X, const int x0, c
   }
 }
 
+__global__ void conv_forward_valid_unrolled_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, 
+                               const float *W, const int w0, const int w1, const int w2, const int w3, 
+                               float *Y, const int y0, const int y1, const int y2, const int y3) {
+ 
+  extern __shared__ float shmemmrelu[];
+  float *Ads = &shmemmrelu[0];
+  float *Bds = &shmemmrelu[16 * 16];
+  // Y[n, output height , output width, m] = 0  // W[p filter_h, q filter_w, c,  m]   // X[n, h + p,w + q,c]
+  int n = blockIdx.z;
+  //w
+  int numARows = y3;
+  int numAColumns = x3 * w0 * w1;
+  //x
+  int numBRows = x3 * w0 * w1;
+  int numBColumns = y1 * y2;
+  //y
+  int numCRows = y3;
+  int numCColumns = y1 * y2;
+  int bx=blockIdx.x; int by=blockIdx.y;
+  int tx=threadIdx.x; int ty=threadIdx.y;
+  int Row=by*16+ty;
+  int Col=bx*16+tx;
+  float Cvalue=0;
+  for (int ph=0;ph<(numAColumns+16-1)/16;++ph){
+    // w
+    if ((Row<numARows)&&(ph*16+tx<numAColumns)){
+      int m = by * 16 + ty;
+      int c = (ph * 16 + tx)/ (w0 * w1);
+      int p = ((ph * 16 + tx) % (w0 * w1)) / w1;
+      int q = ((ph * 16 + tx) % (w0 * w1)) % w1;
+      Ads[ty * 16 + tx]=W[p * w1 * w2 * w3 + q * w2 * w3 + c * w3 + m];
+    }
+    else
+      Ads[ty * 16 + tx]=0.0;
+
+    // x
+    if((ph * 16 + ty<numBRows)&&(Col<numBColumns)){
+      int cx = (ph * 16 + ty) / (w0 * w1);
+      int px = ((ph * 16 + ty) % (w0 * w1)) / w1;
+      int qx = ((ph * 16 + ty) % (w0 * w1)) % w1;
+      int h_out = (bx * 16 + tx) / y2;
+      int w_out = (bx * 16 + tx) % y2;
+      Bds[ty * 16 + tx] = X[n * x1 * x2 * x3 + (h_out + px) * x2 * x3 +(w_out + qx) * x3 + cx];
+    }
+    else
+      Bds[ty * 16 + tx]=0.0;
+
+    __syncthreads();
+    
+    for(int k=0;k<16;++k){
+      Cvalue+=Ads[ty * 16 + k]*Bds[k * 16 + tx];
+    }
+    __syncthreads();
+  }
+
+  if ((Row<numCRows)&&(Col<numCColumns)){
+    atomicAdd(&Y[n * y1 * y2 * y3 + (Col / y2) * y2 * y3 + (Col % y2) * y3 + Row], (Cvalue < 0) ? 0 : Cvalue);
+  }
+}
+
 __global__ void relu_kernel(float *X, int size){
 	int row = blockIdx.x*blockDim.x+threadIdx.x;
 	if(row < size)
@@ -310,7 +370,7 @@ __global__ void average_pool_kernel(const float *X, const int x0, const int x1, 
 //   }
 // }
 
-__global__ void fully_forward_kernel (const float *X, const int x0, const int x1, 
+__global__ void fully_forward_kernel(const float *X, const int x0, const int x1, 
                                       const float *W, const int w0, const int w1,
                                       float *Y, const int y0, const int y1) {
     int i, j;
@@ -417,10 +477,12 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   int device_fc2_size = fc2dims[0] * fc2dims[1];
 
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
+  int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
 
   const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3]};
 
   const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1), (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
+  int device_c_size = cdims[0]*cdims[1]*cdims[2]*cdims[3];
 
   const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size, cdims[3]};
 
@@ -454,7 +516,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaHostRegister(fc1, device_fc1_size * sizeof(float), cudaHostRegisterDefault);
   cudaHostRegister(fc2, device_fc2_size * sizeof(float), cudaHostRegisterDefault);
 
-
   // copy host to device
   cudaMemcpy(device_x, x, device_x_size * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(device_conv1, conv1, device_conv1_size * sizeof(float), cudaMemcpyHostToDevice);
@@ -469,23 +530,33 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   cudaHostUnregister(fc1);
   cudaHostUnregister(fc2);
 
+  
   /* conv layer start */
-  int W_grid = (adims[1]-1)/TILE_WIDTH+1;
-  int H_grid = (adims[2]-1)/TILE_WIDTH+1;
+  // int W_grid, H_grid;
+  // W_grid = (adims[1]-1)/TILE_WIDTH+1;
+  // H_grid = (adims[2]-1)/TILE_WIDTH+1;
 
-  size_t shmem_size = sizeof(float) * ( (TILE_WIDTH +conv1dims[0] -1)*(TILE_WIDTH +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
-  dim3 DimBlock(TILE_WIDTH, TILE_WIDTH, 1);
-  dim3 DimGrid(adims[0], adims[3], W_grid * H_grid);
+  // size_t shmem_size = sizeof(float) * ( (TILE_WIDTH +conv1dims[0] -1)*(TILE_WIDTH +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
+  // dim3 DimBlock(TILE_WIDTH, TILE_WIDTH, 1);
+  // dim3 DimGrid(adims[0], adims[3], W_grid * H_grid);
   const auto start = now();
-  conv_forward_valid_shared_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
-                                                    device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
-                                                    device_a, adims[0], adims[1], adims[2], adims[3]);
+  // conv_forward_valid_shared_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+  //                                                   device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+  //                                                   device_a, adims[0], adims[1], adims[2], adims[3]);
   // dim3 DimGrid(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
   // dim3 DimBlock(256, 1, 1);
   // const auto start = now();
   // conv_forward_valid_kernel<<<DimGrid, DimBlock>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
   //                                                   device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
   //                                                   device_a, adims[0], adims[1], adims[2], adims[3]);
+  cudaMemset(device_a, 0, device_a_size);
+  dim3 DimBlock(16, 16, 1);
+  dim3 DimGrid((adims[1] * adims[2] + 16-1)/16, (adims[3]+16-1)/16, adims[0]);
+  size_t shmem_size = sizeof(float) * (16 * 16 * 2);
+  conv_forward_valid_unrolled_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+                                                    device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+                                                    device_a, adims[0], adims[1], adims[2], adims[3]);
+
   //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
   const auto end = now();
   const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();
@@ -517,19 +588,26 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* conv layer start */
   // dim3 DimGrid3(cdims[0], cdims[3], ceil(cdims[1]*cdims[2]/256.0));
   // dim3 DimBlock3(256, 1, 1);
-  W_grid = (cdims[1]-1)/TILE_WIDTH+1;
-  H_grid = (cdims[2]-1)/TILE_WIDTH+1;
+  // W_grid = (cdims[1]-1)/TILE_WIDTH+1;
+  // H_grid = (cdims[2]-1)/TILE_WIDTH+1;
 
-  size_t shmem_size3 = sizeof(float) * ( (TILE_WIDTH +conv2dims[0] -1)*(TILE_WIDTH +conv2dims[1]-1) + conv2dims[0]*conv2dims[1] ); 
-  dim3 DimBlock3(TILE_WIDTH, TILE_WIDTH, 1);
-  dim3 DimGrid3(cdims[0], cdims[3], W_grid * H_grid);
+  // size_t shmem_size3 = sizeof(float) * ( (TILE_WIDTH +conv2dims[0] -1)*(TILE_WIDTH +conv2dims[1]-1) + conv2dims[0]*conv2dims[1] ); 
+  // dim3 DimBlock3(TILE_WIDTH, TILE_WIDTH, 1);
+  // dim3 DimGrid3(cdims[0], cdims[3], W_grid * H_grid);
   const auto start3 = now();
-    conv_forward_valid_shared_kernel<<<DimGrid3, DimBlock3, shmem_size3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
-                                                    device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
-                                                    device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
+  //   conv_forward_valid_shared_kernel<<<DimGrid3, DimBlock3, shmem_size3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
+  //                                                   device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
+  //                                                   device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
   // conv_forward_valid_kernel<<<DimGrid3, DimBlock3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
   //                                                   device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
   //                                                   device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
+  cudaMemset(device_c, 0, device_c_size);
+  dim3 DimBlock3(16, 16, 1);
+  dim3 DimGrid3((cdims[1] * cdims[2] + 16-1)/16, (cdims[3]+16-1)/16, cdims[0]);
+  shmem_size = sizeof(float) * (16 * 16 * 2);
+  conv_forward_valid_unrolled_kernel<<<DimGrid3, DimBlock3, shmem_size>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
+                                                    device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
+                                                    device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
   const auto end3 = now();
   const auto elapsed3 = std::chrono::duration<double, std::milli>(end3 - start3).count();
   std::cout << "Done with Conv2 in elapsed = " << elapsed3 << " milliseconds." << "\n";
@@ -730,6 +808,9 @@ int main(int argc, char **argv) {
   cudaMalloc((void **) &device_e, device_e_size * sizeof(float));
   cudaMalloc((void **) &device_f, device_f_size * sizeof(float));
   cudaMalloc((void **) &device_out, FLAGS_batch_size * sizeof(int));
+
+  cudaMemset(device_a, 0, device_a_size);
+  cudaMemset(device_c, 0, device_c_size);
 
   cudaMalloc((void **) &device_conv1, device_conv1_size * sizeof(float));
   cudaMalloc((void **) &device_conv2, device_conv2_size * sizeof(float));

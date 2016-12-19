@@ -178,6 +178,7 @@ __global__ void conv_forward_valid_kernel(const float *X, const int x0, const in
 //					Convolution weights W with dimensinos w0-w3
 //					Output image Y with dimensions y0 - y3
 // Function output: Stored in Y
+__constant__ float W_const[800];
 __global__ void conv_forward_valid_shared_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, 
                                const float *W, const int w0, const int w1, const int w2, const int w3, 
                                float *Y, const int y0, const int y1, const int y2, const int y3) {
@@ -208,7 +209,7 @@ __global__ void conv_forward_valid_shared_kernel(const float *X, const int x0, c
         // initialize w_shared
         if(h_0 < 5 && w_0 < 5){
           const auto woffset = h_0 * w1 * w2 * w3 +w_0 * w2 * w3 + c * w3 + m;
-          W_shared[h_0 * 5 + w_0]=W[woffset];
+          W_shared[h_0 * 5 + w_0]=W_const[woffset];
         }
         __syncthreads();
 
@@ -525,12 +526,13 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
   int device_x_size = xdims[0] * xdims[1] * xdims[2] * xdims[3];
   int device_conv1_size = conv1dims[0] * conv1dims[1] * conv1dims[2] * conv1dims[3];
+  std::cout << device_conv1_size << std::endl;
   int device_conv2_size = conv2dims[0] * conv2dims[1] * conv2dims[2] * conv2dims[3];
   int device_fc1_size = fc1dims[0] * fc1dims[1];
   int device_fc2_size = fc2dims[0] * fc2dims[1];
 
   const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1), (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
-  int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
+  //int device_a_size = adims[0]*adims[1]*adims[2]*adims[3];
 
   const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size, adims[3]};
 
@@ -582,6 +584,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
    int W_grid, H_grid;
    W_grid = (adims[1]-1)/TILE_WIDTH+1;
    H_grid = (adims[2]-1)/TILE_WIDTH+1;
+   cudaMemcpyToSymbol(W_const, conv1, device_conv1_size*sizeof(float), 0, cudaMemcpyHostToDevice);
 
    size_t shmem_size = sizeof(float) * ( (TILE_WIDTH +conv1dims[0] -1)*(TILE_WIDTH +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
    dim3 DimBlock(TILE_WIDTH, TILE_WIDTH, 1);

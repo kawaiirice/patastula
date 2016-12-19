@@ -512,6 +512,7 @@ __global__ void argmax_kernel2(const float *X, const int x0, const int x1, int *
   }
 }
 
+// This is the main function we modified
 // Forward operation for the CNN, a combination of conv layer + average pooling + relu
 void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                        float *fc2, int *out,
@@ -545,14 +546,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
   const int fdims[] = {edims[0], fc2dims[1]};
 
-  // allocating host memory
-  // auto a = zeros<float>(adims);
-  // auto b = zeros<float>(bdims);
-  // auto c = zeros<float>(cdims);
-  // auto d = zeros<float>(ddims);
-  // auto e = zeros<float>(edims);
-  // auto f = zeros<float>(fdims);
 
+  // Declare streams for running code asynchronously (see argmax below)
   cudaStream_t stream1, stream2;
   cudaStreamCreate(&stream1);
   cudaStreamCreate(&stream2);
@@ -595,6 +590,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                                                      device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
                                                      device_a, adims[0], adims[1], adims[2], adims[3]);
    /*
+   // This is the code for running the basic parallel conv_forward_valid kernel
    dim3 DimGrid(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
    dim3 DimBlock(256, 1, 1);
    const auto start = now();
@@ -604,6 +600,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
    */
 
   /*
+  // This is the code for running the unrolled parallel conv_forward_valid kernel
   auto a_zero = zeros<float>(adims);
   cudaMemcpy(device_a, a_zero, device_a_size * sizeof(float), cudaMemcpyHostToDevice);
   dim3 DimBlock(16, 16, 1);
@@ -614,6 +611,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                                                     device_a, adims[0], adims[1], adims[2], adims[3]);
 */
 
+  // This is the code for the serial conv_forward_valid function
   //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
   /* conv layer end*/
 
@@ -636,6 +634,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* average pooling end */
 
   /* conv layer start */
+  // This is the code for the parallel shared conv_forward_valid kernel
   // dim3 DimGrid3(cdims[0], cdims[3], ceil(cdims[1]*cdims[2]/256.0));
   // dim3 DimBlock3(256, 1, 1);
   // W_grid = (cdims[1]-1)/TILE_WIDTH+1;
@@ -650,9 +649,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // conv_forward_valid_kernel<<<DimGrid3, DimBlock3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
   //                                                   device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
   //                                                   device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
+
+  // This is the code for the parallel unrolled conv_forward_valid kernel
   auto c_zero = zeros<float>(cdims);
   cudaMemcpy(device_c, c_zero, device_c_size * sizeof(float), cudaMemcpyHostToDevice);
-  //cudaMemset(device_c, 0, device_c_size);
   dim3 DimBlock3(16, 16, 1);
   dim3 DimGrid3((cdims[1] * cdims[2] + 16-1)/16, (cdims[3]+16-1)/16, cdims[0]);
   shmem_size = sizeof(float) * (16 * 16 * 2);
@@ -662,10 +662,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* conv layer end*/
 
   // /* relu later start */
-   //dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
-   //dim3 DimBlock4(256, 1, 1);
+  //dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
+  //dim3 DimBlock4(256, 1, 1);
   // const auto start4 = now();
-   //relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
+  //relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
   // // relu4(c, cdims);
   // const auto end4 = now();
   // const auto elapsed4 = std::chrono::duration<double, std::milli>(end4 - start4).count();
@@ -676,14 +676,17 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   dim3 DimGrid5(ddims[0], ddims[1]*ddims[2], ceil(ddims[3]/32.0));
   dim3 DimBlock5(32, 1, 1);
   average_pool_kernel<<<DimGrid5, DimBlock5>>>(device_c, cdims[0], cdims[1], cdims[2], cdims[3], pool_size, 
-                                                device_d, ddims[0], ddims[1], ddims[2], ddims[3]);//, w_grid);
+                                                device_d, ddims[0], ddims[1], ddims[2], ddims[3]);
+  // This is the code for the serial average_pool
   //average_pool(c, cdims, pool_size, d, ddims);
   /* average pooling end*/
 
   /* fully forward start */
+  // This is the parallel full forward
   dim3 DimGrid6((edims[1]-1)/BLOCK_SIZE + 1, (edims[0]-1)/BLOCK_SIZE + 1, 1);
   dim3 DimBlock6(BLOCK_SIZE, BLOCK_SIZE, 1);
   fully_forward_kernel<<<DimGrid6, DimBlock6>>>(device_d, ddims2[0], ddims2[1], device_fc1, fc1dims[0], fc1dims[1], device_e, edims[0], edims[1]); 
+  // This is the serial full forward
   // fully_forward(d, ddims2, fc1, fc1dims, e, edims);
   /* fully forward end */
 
@@ -700,13 +703,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   fully_forward_kernel<<<DimGrid8, DimBlock8>>>(device_e, edims[0], edims[1], device_fc2, fc2dims[0], fc2dims[1], device_f, fdims[0], fdims[1]);
   //fully_forward(e, edims, fc2, fc2dims, f, fdims);
   /* fully forward end */
-
-  // copy back to host 
-  // const auto start0 = now();
-  // // cudaMemcpy(f, device_f, device_f_size * sizeof(float), cudaMemcpyDeviceToHost);
-  // const auto end0 = now();
-  // const auto elapsed0 = std::chrono::duration<double, std::milli>(end0 - start0).count();
-  // std::cout << "Copy back to host in elapsed = " << elapsed0 << " milliseconds." << "\n";
 
   /* argmax start */
   dim3 DimGrid9((FLAGS_batch_size - 1)/16 + 1, 1, 1);

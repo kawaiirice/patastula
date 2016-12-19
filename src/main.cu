@@ -707,25 +707,20 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* argmax start */
   dim3 DimGrid9((FLAGS_batch_size - 1)/16 + 1, 1, 1);
   dim3 DimBlock9(16, 1, 1);
+  // This is the serial argmax function call
   // argmax(f, fdims, out);
+
+  // Here we call the two argmax kernel functions asynchronously
   argmax_kernel1<<<DimGrid9, DimBlock9, 0, stream1>>>(device_f, fdims[0], fdims[1], device_out);
   argmax_kernel2<<<DimGrid9, DimBlock9, 0, stream2>>>(device_f, fdims[0], fdims[1], device_out);
   /* argmax end */
   // cudaHostRegister(out, FLAGS_batch_size * sizeof(int), cudaHostRegisterDefault);
-  // copy back to host 
+  // copy back to host asynchronously
   cudaMemcpyAsync(out, device_out, FLAGS_batch_size/2 * sizeof(int), cudaMemcpyDeviceToHost, stream1);
   cudaMemcpyAsync(&out[FLAGS_batch_size/2], &device_out[FLAGS_batch_size/2], FLAGS_batch_size/2 * sizeof(int), cudaMemcpyDeviceToHost, stream2);
 
   // cudaHostUnregister(out);
 
-
-  // free host memory
-  // delete[] a;
-  // delete[] b;
-  // delete[] c;
-  // delete[] d;
-  // delete[] e;
-  // delete[] f;
 }
 
 int main(int argc, char **argv) {
@@ -828,9 +823,6 @@ int main(int argc, char **argv) {
   cudaMalloc((void **) &device_e, device_e_size * sizeof(float));
   cudaMalloc((void **) &device_f, device_f_size * sizeof(float));
   cudaMalloc((void **) &device_out, FLAGS_batch_size * sizeof(int));
-
-  cudaMemset(device_a, 0, device_a_size);
-  cudaMemset(device_c, 0, device_c_size);
 
   cudaMalloc((void **) &device_conv1, device_conv1_size * sizeof(float));
   cudaMalloc((void **) &device_conv2, device_conv2_size * sizeof(float));

@@ -522,25 +522,28 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
   
   /* conv layer start */
-  // int W_grid, H_grid;
-  // W_grid = (adims[1]-1)/TILE_WIDTH+1;
-  // H_grid = (adims[2]-1)/TILE_WIDTH+1;
+   int W_grid, H_grid;
+   W_grid = (adims[1]-1)/TILE_WIDTH+1;
+   H_grid = (adims[2]-1)/TILE_WIDTH+1;
 
-  // size_t shmem_size = sizeof(float) * ( (TILE_WIDTH +conv1dims[0] -1)*(TILE_WIDTH +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
-  // dim3 DimBlock(TILE_WIDTH, TILE_WIDTH, 1);
-  // dim3 DimGrid(adims[0], adims[3], W_grid * H_grid);
+   size_t shmem_size = sizeof(float) * ( (TILE_WIDTH +conv1dims[0] -1)*(TILE_WIDTH +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
+   dim3 DimBlock(TILE_WIDTH, TILE_WIDTH, 1);
+   dim3 DimGrid(adims[0], adims[3], W_grid * H_grid);
   const auto start = now();
-  // conv_forward_valid_shared_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
-  //                                                   device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
-  //                                                   device_a, adims[0], adims[1], adims[2], adims[3]);
-  // dim3 DimGrid(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
-  // dim3 DimBlock(256, 1, 1);
-  // const auto start = now();
-  // conv_forward_valid_kernel<<<DimGrid, DimBlock>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
-  //                                                   device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
-  //                                                   device_a, adims[0], adims[1], adims[2], adims[3]);
+   conv_forward_valid_shared_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+                                                     device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+                                                     device_a, adims[0], adims[1], adims[2], adims[3]);
+   /*
+   dim3 DimGrid(adims[0], adims[3], ceil(adims[1]*adims[2]/256.0));
+   dim3 DimBlock(256, 1, 1);
+   const auto start = now();
+   conv_forward_valid_kernel<<<DimGrid, DimBlock>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
+                                                     device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
+                                                     device_a, adims[0], adims[1], adims[2], adims[3]);
+   */
+
+  /*
   auto a_zero = zeros<float>(adims);
-  //cudaMemset(device_a, 0, device_a_size);
   cudaMemcpy(device_a, a_zero, device_a_size * sizeof(float), cudaMemcpyHostToDevice);
   dim3 DimBlock(16, 16, 1);
   dim3 DimGrid((adims[1] * adims[2] + 16-1)/16, (adims[3]+16-1)/16, adims[0]);
@@ -548,6 +551,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   conv_forward_valid_unrolled_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
                                                     device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
                                                     device_a, adims[0], adims[1], adims[2], adims[3]);
+*/
 
   //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
   const auto end = now();

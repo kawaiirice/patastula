@@ -224,59 +224,49 @@ __global__ void conv_forward_valid_unrolled_kernel(const float *X, const int x0,
                                const float *W, const int w0, const int w1, const int w2, const int w3, 
                                float *Y, const int y0, const int y1, const int y2, const int y3) {
  
-  extern __shared__ float shmemmrelu[];
-  float *Ads = &shmemmrelu[0];
-  float *Bds = &shmemmrelu[16 * 16];
-  // Y[n, output height , output width, m] = 0  // W[p filter_h, q filter_w, c,  m]   // X[n, h + p,w + q,c]
-  int n = blockIdx.z;
-  //w
-  int numARows = y3;
-  int numAColumns = x3 * w0 * w1;
-  //x
-  int numBRows = x3 * w0 * w1;
-  int numBColumns = y1 * y2;
-  //y
-  int numCRows = y3;
-  int numCColumns = y1 * y2;
-  int bx=blockIdx.x; int by=blockIdx.y;
-  int tx=threadIdx.x; int ty=threadIdx.y;
-  int Row=by*16+ty;
-  int Col=bx*16+tx;
-  float Cvalue=0;
-  for (int ph=0;ph<(numAColumns+16-1)/16;++ph){
-    // w
-    if ((Row<numARows)&&(ph*16+tx<numAColumns)){
-      int m = by * 16 + ty;
-      int c = (ph * 16 + tx)/ (w0 * w1);
-      int p = ((ph * 16 + tx) % (w0 * w1)) / w1;
-      int q = ((ph * 16 + tx) % (w0 * w1)) % w1;
-      Ads[ty * 16 + tx]=W[p * w1 * w2 * w3 + q * w2 * w3 + c * w3 + m];
-    }
-    else
-      Ads[ty * 16 + tx]=0.0;
+  extern __shared__ float shared_mem[];
+  float *a_shared = &shared_mem[0];
+  float *b_shared = &shared_mem[16 * 16];
 
-    // x
-    if((ph * 16 + ty<numBRows)&&(Col<numBColumns)){
-      int cx = (ph * 16 + ty) / (w0 * w1);
-      int px = ((ph * 16 + ty) % (w0 * w1)) / w1;
-      int qx = ((ph * 16 + ty) % (w0 * w1)) % w1;
-      int h_out = (bx * 16 + tx) / y2;
-      int w_out = (bx * 16 + tx) % y2;
-      Bds[ty * 16 + tx] = X[n * x1 * x2 * x3 + (h_out + px) * x2 * x3 +(w_out + qx) * x3 + cx];
+  int n = blockIdx.z;
+  int bx = blockIdx.x; 
+  int by = blockIdx.y;
+  int tx = threadIdx.x; 
+  int ty = threadIdx.y;
+
+  float acc=0;
+  for(int i=0; i<(x3*w0*w1+16-1)/16; ++i){
+    if((by*16+ty<y3) && (i*16+tx < x3*w0*w1)){
+      int p = ((i * 16 + tx) % (w0 * w1)) / w1;
+      int q = ((i * 16 + tx) % (w0 * w1)) % w1;
+      int c = (i * 16 + tx)/ (w0 * w1);
+      int m = by * 16 + ty;
+      a_shared[ty * 16 + tx]=W[p * w1 * w2 * w3 + q * w2 * w3 + c * w3 + m];
     }
     else
-      Bds[ty * 16 + tx]=0.0;
+      a_shared[ty * 16 + tx]=0.0;
+
+    if((i * 16 + ty<x3*w0*w1)&&(bx*16+tx<y1*y2)){
+      int px = ((i * 16 + ty) % (w0 * w1)) / w1;
+      int qx = ((i * 16 + ty) % (w0 * w1)) % w1;
+      int cx = (i * 16 + ty) / (w0 * w1);
+      int h = (bx * 16 + tx) / y2;
+      int w = (bx * 16 + tx) % y2;
+      b_shared[ty * 16 + tx] = X[n * x1 * x2 * x3 + (h + px) * x2 * x3 +(w + qx) * x3 + cx];
+    }
+    else
+      b_shared[ty * 16 + tx]=0.0;
 
     __syncthreads();
     
     for(int k=0;k<16;++k){
-      Cvalue+=Ads[ty * 16 + k]*Bds[k * 16 + tx];
+      acc+=a_shared[ty * 16 + k]*b_shared[k * 16 + tx];
     }
     __syncthreads();
   }
 
-  if ((Row<numCRows)&&(Col<numCColumns)){
-    atomicAdd(&Y[n * y1 * y2 * y3 + (Col / y2) * y2 * y3 + (Col % y2) * y3 + Row], (Cvalue < 0) ? 0 : Cvalue);
+  if ((by*16+ty<y3)&&(bx*16+tx<y1*y2)&&(acc>0)){
+    atomicAdd(&Y[n * y1 * y2 * y3 + ((bx*16+tx )/ y2) * y2 * y3 + ((bx*16+tx) % y2) * y3 + by*16+ty], acc);
   }
 }
 
@@ -347,11 +337,11 @@ __global__ void average_pool_kernel(const float *X, const int x0, const int x1, 
 	  const auto yoffset = ((i * y1 + h) * y2 + w) * y3 + m;
 	  float acc = 0;
 	  for (const auto p : range(0, pool_size)) {
-      for (const auto q : range(0, pool_size)) {
-        const auto xoffset = i * x1 * x2 * x3 + (pool_size * h + p) * x2 * x3 + (pool_size * w + q) * x3 + m;
-        acc += X[xoffset] / (1.0f * pool_size * pool_size);
-        // Y[yoffset] += X[xoffset] / (1.0f * pool_size * pool_size);
-      }
+		  for (const auto q : range(0, pool_size)) {
+			const auto xoffset = i * x1 * x2 * x3 + (pool_size * h + p) * x2 * x3 + (pool_size * w + q) * x3 + m;
+			acc += X[xoffset] / (1.0f * pool_size * pool_size);
+			// Y[yoffset] += X[xoffset] / (1.0f * pool_size * pool_size);
+		  }
 	  }
 	  Y[yoffset] = acc;
 	}
@@ -566,10 +556,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* conv layer end*/
 
   // /* relu kernel start */
-   dim3 DimGrid1(ceil(device_a_size/256), 1, 1);
-   dim3 DimBlock1(256, 1, 1);
+   //dim3 DimGrid1(ceil(device_a_size/256), 1, 1);
+   //dim3 DimBlock1(256, 1, 1);
   // const auto start1 = now();
-   relu_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_a_size);
+   //relu_kernel<<<DimGrid1, DimBlock1>>>(device_a, device_a_size);
   // // relu4(a, adims);
   // const auto end1 = now();
   // const auto elapsed1 = std::chrono::duration<double, std::milli>(end1 - start1).count();
@@ -618,10 +608,10 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* conv layer end*/
 
   // /* relu later start */
-   dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
-   dim3 DimBlock4(256, 1, 1);
+   //dim3 DimGrid4(ceil(device_c_size/256), 1, 1);
+   //dim3 DimBlock4(256, 1, 1);
   // const auto start4 = now();
-   relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
+   //relu_kernel<<<DimGrid4, DimBlock4>>>(device_c, device_c_size);
   // // relu4(c, cdims);
   // const auto end4 = now();
   // const auto elapsed4 = std::chrono::duration<double, std::milli>(end4 - start4).count();

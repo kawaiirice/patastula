@@ -529,7 +529,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
    size_t shmem_size = sizeof(float) * ( (TILE_WIDTH +conv1dims[0] -1)*(TILE_WIDTH +conv1dims[1]-1) + conv1dims[0]*conv1dims[1] ); 
    dim3 DimBlock(TILE_WIDTH, TILE_WIDTH, 1);
    dim3 DimGrid(adims[0], adims[3], W_grid * H_grid);
-  const auto start = now();
    conv_forward_valid_shared_kernel<<<DimGrid, DimBlock, shmem_size>>>(device_x, xdims[0], xdims[1], xdims[2], xdims[3], 
                                                      device_conv1, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3], 
                                                      device_a, adims[0], adims[1], adims[2], adims[3]);
@@ -554,9 +553,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 */
 
   //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
-  const auto end = now();
-  const auto elapsed = std::chrono::duration<double, std::milli>(end - start).count();
-  std::cout << "Done with Conv1 in elapsed = " << elapsed << " milliseconds." << "\n";
   /* conv layer end*/
 
   // /* relu kernel start */
@@ -573,12 +569,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* average pooling start */
   dim3 DimGrid2(bdims[0],bdims[1]*bdims[2], ceil(bdims[3]/32.0));
   dim3 DimBlock2(32, 1, 1);
-  const auto start2 = now();
   average_pool_kernel<<<DimGrid2, DimBlock2>>>(device_a, adims[0], adims[1], adims[2], adims[3], pool_size, 
                                                 device_b, bdims[0], bdims[1], bdims[2], bdims[3]);
-  const auto end2 = now();
-  const auto elapsed2 = std::chrono::duration<double, std::milli>(end2 - start2).count();
-  std::cout << "Done with pool1 in elapsed = " << elapsed2 << " milliseconds." << "\n";
   /* average pooling end */
 
   /* conv layer start */
@@ -590,7 +582,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // size_t shmem_size3 = sizeof(float) * ( (TILE_WIDTH +conv2dims[0] -1)*(TILE_WIDTH +conv2dims[1]-1) + conv2dims[0]*conv2dims[1] ); 
   // dim3 DimBlock3(TILE_WIDTH, TILE_WIDTH, 1);
   // dim3 DimGrid3(cdims[0], cdims[3], W_grid * H_grid);
-  const auto start3 = now();
   //   conv_forward_valid_shared_kernel<<<DimGrid3, DimBlock3, shmem_size3>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
   //                                                   device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
   //                                                   device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
@@ -606,9 +597,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   conv_forward_valid_unrolled_kernel<<<DimGrid3, DimBlock3, shmem_size>>>(device_b, bdims[0], bdims[1], bdims[2], bdims[3], 
                                                     device_conv2, conv2dims[0], conv2dims[1], conv2dims[2], conv2dims[3], 
                                                     device_c, cdims[0], cdims[1], cdims[2], cdims[3]);
-  const auto end3 = now();
-  const auto elapsed3 = std::chrono::duration<double, std::milli>(end3 - start3).count();
-  std::cout << "Done with Conv2 in elapsed = " << elapsed3 << " milliseconds." << "\n";
   /* conv layer end*/
 
   // /* relu later start */
@@ -625,46 +613,30 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* average pooling start*/
   dim3 DimGrid5(ddims[0], ddims[1]*ddims[2], ceil(ddims[3]/32.0));
   dim3 DimBlock5(32, 1, 1);
-  const auto start5 = now();
   average_pool_kernel<<<DimGrid5, DimBlock5>>>(device_c, cdims[0], cdims[1], cdims[2], cdims[3], pool_size, 
                                                 device_d, ddims[0], ddims[1], ddims[2], ddims[3]);//, w_grid);
   //average_pool(c, cdims, pool_size, d, ddims);
-  const auto end5 = now();
-  const auto elapsed5 = std::chrono::duration<double, std::milli>(end5 - start5).count();
-  std::cout << "Done with pool2 in elapsed = " << elapsed5 << " milliseconds." << "\n";
   /* average pooling end*/
 
   /* fully forward start */
   dim3 DimGrid6((edims[1]-1)/BLOCK_SIZE + 1, (edims[0]-1)/BLOCK_SIZE + 1, 1);
   dim3 DimBlock6(BLOCK_SIZE, BLOCK_SIZE, 1);
-  const auto start6 = now();
   fully_forward_kernel<<<DimGrid6, DimBlock6>>>(device_d, ddims2[0], ddims2[1], device_fc1, fc1dims[0], fc1dims[1], device_e, edims[0], edims[1]); 
   // fully_forward(d, ddims2, fc1, fc1dims, e, edims);
-  const auto end6 = now();
-  const auto elapsed6 = std::chrono::duration<double, std::milli>(end6 - start6).count();
-  std::cout << "Done with fully_forward1 in elapsed = " << elapsed6 << " milliseconds." << "\n";
   /* fully forward end */
 
   /* relu2 start */
   dim3 DimGrid7(ceil(device_e_size/256.0), 1, 1);
   dim3 DimBlock7(256, 1, 1);
-  const auto start7 = now();
   relu_kernel<<<DimGrid7, DimBlock7>>>(device_e, device_e_size);
   // relu2(e, edims);
-  const auto end7 = now();
-  const auto elapsed7 = std::chrono::duration<double, std::milli>(end7 - start7).count();
-  std::cout << "Done with relu2 in elapsed = " << elapsed7 << " milliseconds." << "\n";
   /* relu2 end */
 
   /* fully forward start */
   dim3 DimGrid8((fdims[1] - 1)/BLOCK_SIZE + 1, (fdims[0] - 1)/BLOCK_SIZE + 1, 1);
   dim3 DimBlock8(BLOCK_SIZE, BLOCK_SIZE, 1);
-  const auto start8 = now();
   fully_forward_kernel<<<DimGrid8, DimBlock8>>>(device_e, edims[0], edims[1], device_fc2, fc2dims[0], fc2dims[1], device_f, fdims[0], fdims[1]);
   //fully_forward(e, edims, fc2, fc2dims, f, fdims);
-  const auto end8 = now();
-  const auto elapsed8 = std::chrono::duration<double, std::milli>(end8 - start8).count();
-  std::cout << "Done with fully_forward 2 in elapsed = " << elapsed8 << " milliseconds." << "\n";
   /* fully forward end */
 
   // copy back to host 
@@ -677,22 +649,14 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   /* argmax start */
   dim3 DimGrid9((FLAGS_batch_size - 1)/16 + 1, 1, 1);
   dim3 DimBlock9(16, 1, 1);
-  const auto start9 = now();
   // argmax(f, fdims, out);
   argmax_kernel1<<<DimGrid9, DimBlock9, 0, stream1>>>(device_f, fdims[0], fdims[1], device_out);
   argmax_kernel2<<<DimGrid9, DimBlock9, 0, stream2>>>(device_f, fdims[0], fdims[1], device_out);
-  const auto end9 = now();
-  const auto elapsed9 = std::chrono::duration<double, std::milli>(end9 - start9).count();
-  std::cout << "Done with argmax in " << "elapsed = " << elapsed << " milliseconds." << "\n";
   /* argmax end */
   // cudaHostRegister(out, FLAGS_batch_size * sizeof(int), cudaHostRegisterDefault);
   // copy back to host 
-  const auto start0 = now();
   cudaMemcpyAsync(out, device_out, FLAGS_batch_size/2 * sizeof(int), cudaMemcpyDeviceToHost, stream1);
   cudaMemcpyAsync(&out[FLAGS_batch_size/2], &device_out[FLAGS_batch_size/2], FLAGS_batch_size/2 * sizeof(int), cudaMemcpyDeviceToHost, stream2);
-  const auto end0 = now();
-  const auto elapsed0 = std::chrono::duration<double, std::milli>(end0 - start0).count();
-  std::cout << "Copy back to host in elapsed = " << elapsed0 << " milliseconds." << "\n";
 
   // cudaHostUnregister(out);
 

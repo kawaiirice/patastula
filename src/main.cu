@@ -352,53 +352,6 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
   }
 }
 
-  /*
-  float *device_w;
-  float *device_conv1;
-  cudaMalloc((void **)&device_w, 32*25*sizeof(float));
-  cudaMalloc((void **)&device_conv1, 32*25*sizeof(float));
-  cudaMemcpy(device_conv1, conv1, 32*25 * sizeof(float), cudaMemcpyHostToDevice);
-  dim3 DimBlock(256, 1, 1);
-  dim3 DimGrid(ceil(32*25/256.0), 1, 1);
-
-  unroll_w<<<DimGrid, DimBlock>>>(device_conv1, device_w, conv1dims[0], conv1dims[1], conv1dims[2], conv1dims[3]);
-  auto s_w = zeros<float>(32*25);
-  cudaMemcpy(s_w, device_w, 32*25 * sizeof(float), cudaMemcpyDeviceToHost);
-
-  float *device_x;
-  float *d_unroll_x;
-  int dxsize = xdims[0]* xdims[1]* xdims[2]* xdims[3];
-  cudaMalloc((void **)&device_x, dxsize*sizeof(float));
-  cudaMemcpy(device_x, x, dxsize * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMalloc((void **)&d_unroll_x, xdims[0]*25*24*24*sizeof(float));
-
-  float *device_a;
-  cudaMalloc((void **)&device_a, adims[0]*adims[1]*adims[2]*adims[3]*sizeof(float));
-
-  dim3 DimBlock1(96, 1, 1);
-  dim3 DimGrid1(xdims[0], 1, 1);
-
-  //for(int i=0; 
-  for(int i=0; i<6; i++){
-	  unroll_x<<<DimGrid1, DimBlock1>>> (device_x, d_unroll_x, xdims[0], xdims[1], xdims[2], xdims[3], adims[1], adims[2], adims[3], i);
-	  unroll_mult<<<DimGrid1, DimBlock1>>>(device_w, d_unroll_x, device_a, i);
-  }
-  auto s_x = zeros<float>(10*25*24*24);
-  cudaMemcpy(s_x, d_unroll_x, xdims[0]*25*24*24 * sizeof(float), cudaMemcpyDeviceToHost);
-  auto s_y = zeros<float>(10*32*24*24);
-
-  dim3 DimBlock2(1, 1, 1);
-  dim3 DimGrid2(xdims[0], 1, 1);
-  float *device_a_out;
-  cudaMalloc((void **)&device_a_out, adims[0]*adims[1]*adims[2]*adims[3]*sizeof(float));
-  reroll_y<<<DimGrid2, DimBlock2>>>(device_a, device_a_out, adims[0], adims[1], adims[2], adims[3]);
-  cudaMemcpy(a, device_a_out, adims[0]*adims[1]*adims[2]*adims[3] * sizeof(float), cudaMemcpyDeviceToHost);
-  cudaFree(device_a);
-  cudaFree(device_a_out);
-  cudaFree(device_x);
-  cudaFree(d_unroll_x);
-  cudaFree(device_w);
-  */
 // Forward operation for the CNN, a combination of conv layer + average pooling
 // + relu
 void forward_operation(float *x, float *conv1, float *conv2, float *fc1,

@@ -328,12 +328,12 @@ __global__ void relu_kernel(float *X, int size){
 __global__ void average_pool_kernel(const float *X, const int x0, const int x1, const int x2, const int x3, const int pool_size, 
                                     float *Y, const int y0, const int y1, const int y2, const int y3){
 	int i = blockIdx.x;
-	int m = blockIdx.y;
-	int idx = blockIdx.z*blockDim.x + threadIdx.x;
+	int m = threadIdx.x + blockDim.x*blockIdx.z;
+	int idx = blockIdx.y;
 	int h = idx/y2;
 	int w = idx%y2;
 
-	if(h < y1 && w < y2){
+	if(h < y1 && w < y2 && m < y3){
 	  const auto yoffset = ((i * y1 + h) * y2 + w) * y3 + m;
 	  float acc = 0;
 	  for (const auto p : range(0, pool_size)) {
@@ -567,8 +567,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // /* relu kernel end */
 
   /* average pooling start */
-  dim3 DimGrid2(bdims[0], bdims[3], ceil(bdims[1]*bdims[2]/256.0));
-  dim3 DimBlock2(256, 1, 1);
+  dim3 DimGrid2(bdims[0],bdims[1]*bdims[2], ceil(bdims[3]/32.0));
+  dim3 DimBlock2(32, 1, 1);
   const auto start2 = now();
   average_pool_kernel<<<DimGrid2, DimBlock2>>>(device_a, adims[0], adims[1], adims[2], adims[3], pool_size, 
                                                 device_b, bdims[0], bdims[1], bdims[2], bdims[3]);
@@ -619,8 +619,8 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // /* relu layer end*/
 
   /* average pooling start*/
-  dim3 DimGrid5(ddims[0], ddims[3], ceil(ddims[1]*ddims[2]/256.0));
-  dim3 DimBlock5(256, 1, 1);
+  dim3 DimGrid5(ddims[0], ddims[1]*ddims[2], ceil(ddims[3]/32.0));
+  dim3 DimBlock5(32, 1, 1);
   const auto start5 = now();
   average_pool_kernel<<<DimGrid5, DimBlock5>>>(device_c, cdims[0], cdims[1], cdims[2], cdims[3], pool_size, 
                                                 device_d, ddims[0], ddims[1], ddims[2], ddims[3]);//, w_grid);
